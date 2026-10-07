@@ -2,7 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/n-schilling/ha-app-nvme-monitor)](https://github.com/n-schilling/ha-app-nvme-monitor/releases)
 [![CI](https://github.com/n-schilling/ha-app-nvme-monitor/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/n-schilling/ha-app-nvme-monitor/actions/workflows/ci.yaml)
-[![License](https://img.shields.io/github/license/n-schilling/ha-app-nvme-monitor)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 ![Home Assistant app](https://img.shields.io/badge/Home%20Assistant-app-41BDF5?logo=homeassistant&logoColor=white)
 ![Supports aarch64](https://img.shields.io/badge/aarch64-yes-green.svg)
 ![Supports amd64](https://img.shields.io/badge/amd64-yes-green.svg)
