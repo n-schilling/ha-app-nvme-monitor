@@ -76,7 +76,7 @@ for e in temp_composite percent_used; do
 done
 start_service
 wait_for '[[ -n "$(retained nvme_monitor/temp_composite)" ]]' 90
-expect 'device message retained' "$(retained "${DEVICE}" | jq '.components | length')" 13
+expect 'device message retained' "$(retained "${DEVICE}" | jq '.components | length')" 14
 expect 'old topics removed' "$(retained homeassistant/sensor/nvme_monitor/temp_composite/config)$(retained homeassistant/sensor/nvme_monitor/percent_used/config)" ''
 expect 'hand-over logged' "$(grep -c '2 entities of nvme_monitor moved to device discovery' "${WORK}/log")" 1
 expect 'state retained' "$(retained nvme_monitor/temp_composite)" 41
