@@ -159,6 +159,10 @@ discover_drive() {
           \"json_attributes_topic\":\"${n}/throttle_active/attr\"}"
     discover "${n}" "${dev}" critical_warning 'Critical warning' binary_sensor \
         '{"device_class":"problem","payload_on":"ON","payload_off":"OFF"}'
+    # One entity for automations: on for any sign that the drive needs attention
+    discover "${n}" "${dev}" health_problem 'Drive problem' binary_sensor \
+        "{\"device_class\":\"problem\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\",
+          \"json_attributes_topic\":\"${n}/health_problem/attr\"}"
     md_announce "${n}" "$(jq -nc --argjson c "${COMPONENTS}" --argjson dev "${dev}" \
         --argjson origin "${ORIGIN}" --arg avail "${AVAIL}" \
         '{device:$dev, origin:$origin, availability_topic:$avail, qos:1, components:$c}')" \
@@ -228,6 +232,17 @@ publish_smart() {
     pubj "${t}/throttle_count"   "${j}" '(.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0)'
     pubj "${t}/throttle_time"    "${j}" '(.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0)'
     pubj "${t}/critical_warning" "${j}" 'if .critical_warning == 0 then "OFF" else "ON" end'
+    # The reasons a drive needs attention; empty = healthy
+    local reasons
+    reasons=$(jq -c '[
+        (if (.critical_warning // 0) != 0 then "critical warning \(.critical_warning)" else empty end),
+        (if (.media_errors // 0) > 0 then "\(.media_errors) media errors" else empty end),
+        (if .avail_spare != null and .spare_thresh != null and .avail_spare <= .spare_thresh
+            then "spare at \(.avail_spare) %, threshold \(.spare_thresh) %" else empty end),
+        (if (.percent_used // 0) >= 100 then "rated endurance used up (\(.percent_used) %)" else empty end)
+    ]' <<< "${j}") || return 1
+    jq -j 'if length > 0 then "ON" else "OFF" end' <<< "${reasons}" | pub "${t}/health_problem"
+    jq -c '{reasons: .}' <<< "${reasons}" | pub "${t}/health_problem/attr"
 }
 
 hold_availability &

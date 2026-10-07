@@ -2,7 +2,13 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.1.1] - 2026-10-07
+## [2.2.0] - 2026-10-07
+
+### Added
+
+- *Drive problem*: one binary sensor per drive for automations, on for a critical warning, media errors, the spare at or below the drive's threshold, or the rated endurance used up; the `reasons` attribute names them
+
+## 2.1.1 - 2026-10-07
 
 ### Fixed
 
@@ -82,4 +88,4 @@ All notable changes to this app are documented here. The format follows [Keep a 
 
 - First version in this repository
 
-[2.1.1]: https://github.com/n-schilling/ha-app-nvme-monitor/releases/tag/v2.1.1
+[2.2.0]: https://github.com/n-schilling/ha-app-nvme-monitor/releases/tag/v2.2.0

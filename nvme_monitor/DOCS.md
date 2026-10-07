@@ -28,6 +28,7 @@ One device per drive: **Host NVMe** for the first one (`nvme0`), **Host NVMe 1**
 | Thermal throttling time | Total time throttled (diagnostic) |
 | Thermal throttling active | On while throttling grew since the previous reading; attributes carry the drive's warning, critical and throttling thresholds |
 | Critical warning | On when the drive reports any critical warning |
+| Drive problem | On when the drive needs attention: a critical warning, media errors, the spare at or below the drive's threshold, or the rated endurance used up; the `reasons` attribute names them |
 
 ## Options
 
@@ -39,12 +40,12 @@ One device per drive: **Host NVMe** for the first one (`nvme0`), **Host NVMe 1**
 
 ## Example automations
 
-Notify when the drive reports a critical warning or its wear passes 80 %:
+Notify when the drive needs attention or its wear passes 80 %:
 
 ```yaml
 triggers:
   - trigger: state
-    entity_id: binary_sensor.host_nvme_critical_warning
+    entity_id: binary_sensor.host_nvme_drive_problem
     to: "on"
   - trigger: numeric_state
     entity_id: sensor.host_nvme_wear
@@ -52,7 +53,9 @@ triggers:
 actions:
   - action: notify.notify
     data:
-      message: "NVMe drive needs attention: {{ trigger.to_state.name }} is {{ trigger.to_state.state }}."
+      message: >-
+        NVMe drive needs attention: {{ state_attr('binary_sensor.host_nvme_drive_problem', 'reasons') | join(', ')
+        or (trigger.to_state.name ~ ' is ' ~ trigger.to_state.state) }}"
 ```
 
 Notify when the drive throttled for more than ten minutes, a sign that it needs a heatsink or more airflow:

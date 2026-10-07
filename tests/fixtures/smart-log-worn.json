@@ -1,0 +1,1 @@
+{"critical_warning": 0, "temperature": 300, "avail_spare": 8, "spare_thresh": 10, "percent_used": 104, "data_units_read": 1000, "data_units_written": 6538944, "unsafe_shutdowns": 61, "media_errors": 3, "num_err_log_entries": 0, "thm_temp1_trans_count": 252869, "thm_temp2_trans_count": 0, "thm_temp1_total_time": 12617, "thm_temp2_total_time": 0}

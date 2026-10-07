@@ -77,6 +77,7 @@ expect 'unsafe shutdowns' "$(last nvme_monitor/unsafe_shutdowns)" 61
 expect 'throttling events, both stages' "$(last nvme_monitor/throttle_count)" 252869
 expect 'no throttling without a change' "$(last nvme_monitor/throttle_active)" OFF
 expect 'no critical warning' "$(last nvme_monitor/critical_warning)" OFF
+expect 'no drive problem' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" 'OFF|{"reasons":[]}'
 expect 'thresholds from the controller' "$(last nvme_monitor/throttle_active/attr)" \
     '{"warning_temp_c":70,"critical_temp_c":85,"throttle_stage1_c":78,"throttle_stage2_c":83}'
 
@@ -100,7 +101,7 @@ expect 'no crash entity announced' "$(grep -c 'crashes.*/config	{' "${PUBLISHED}
 echo '# Discovery'
 expect 'one message per drive' "$(grep -c '^homeassistant/device/[a-z0-9_]*/config	{' "${PUBLISHED}")" 2
 expect 'all entities of both drives: 13 + 11' \
-    "$(( $(dev nvme_monitor | jq '.components | length') + $(dev nvme_monitor_nvme1 | jq '.components | length') ))" 24
+    "$(( $(dev nvme_monitor | jq '.components | length') + $(dev nvme_monitor_nvme1 | jq '.components | length') ))" 26
 expect 'no single entity topics' "$(grep -c '^homeassistant/[a-z_]*/nvme_monitor[a-z0-9_]*/[a-z0-9_]*/config	{' "${PUBLISHED}")" 0
 expect 'unique ID unchanged (entity IDs depend on it)' \
     "$(dev nvme_monitor | jq -r .components.temp_composite.unique_id)" nvme_monitor_temp_composite
@@ -130,10 +131,17 @@ expect 'migration before the device message' \
 expect 'old topics cleared' "$(last homeassistant/sensor/nvme_monitor/temp_composite/config)|$(last homeassistant/sensor/nvme_monitor_nvme1/wear/config)" '|'
 : > "${RETAINED}"
 
+echo '# A worn drive'
+NVME1_LOG=/tests/fixtures/smart-log-worn.json run_monitor /tests/fixtures/smart-log.json
+expect 'drive problem names every reason' "$(last nvme_monitor_nvme1/health_problem)|$(last nvme_monitor_nvme1/health_problem/attr)" \
+    'ON|{"reasons":["3 media errors","spare at 8 %, threshold 10 %","rated endurance used up (104 %)"]}'
+
 echo '# Throttling and critical warning'
 run_monitor /tests/fixtures/smart-log-throttling.json
 expect 'throttling active after the counters grew' "$(last nvme_monitor/throttle_active)" ON
 expect 'critical warning bit set' "$(last nvme_monitor/critical_warning)" ON
+expect 'drive problem with its reason' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" \
+    'ON|{"reasons":["critical warning 2"]}'
 expect 'warning logged' "$(grep -c 'Thermal throttling active' "${WORK}/log")" 1
 
 if (( FAILED )); then
