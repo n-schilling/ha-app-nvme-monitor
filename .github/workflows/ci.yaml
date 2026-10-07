@@ -86,7 +86,7 @@ jobs:
             -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.0.22
       - name: Test
         run: >-
-          docker run --rm --network ci -v "${PWD}/tests:/tests:ro" --entrypoint bash
+          docker run --rm --network ci --add-host supervisor:127.0.0.1 -v "${PWD}/tests:/tests:ro" --entrypoint bash
           nvme-monitor:test /tests/test_broker.sh
       - name: Broker log
         if: failure()

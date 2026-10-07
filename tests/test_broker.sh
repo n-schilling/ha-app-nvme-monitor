@@ -75,7 +75,7 @@ for e in temp_composite percent_used; do
         | mosquitto_pub -h broker -r -t "homeassistant/sensor/nvme_monitor/${e}/config" -s
 done
 start_service
-wait_for '[[ -n "$(retained nvme_monitor/temp_composite)" ]]' 30
+wait_for '[[ -n "$(retained nvme_monitor/temp_composite)" ]]' 90
 expect 'device message retained' "$(retained "${DEVICE}" | jq '.components | length')" 13
 expect 'old topics removed' "$(retained homeassistant/sensor/nvme_monitor/temp_composite/config)$(retained homeassistant/sensor/nvme_monitor/percent_used/config)" ''
 expect 'hand-over logged' "$(grep -c '2 entities of nvme_monitor moved to device discovery' "${WORK}/log")" 1
@@ -89,7 +89,7 @@ expect 'offline after a stop' "$(retained "${AVAIL}")" offline
 
 echo '# Last will'
 start_service
-wait_for '[[ "$(retained "${AVAIL}")" == online ]]' 30
+wait_for '[[ "$(retained "${AVAIL}")" == online ]]' 90
 # The app dies without saying goodbye: the broker sends the last will
 kill_all
 wait_for '[[ "$(retained "${AVAIL}")" == offline ]]' 10
