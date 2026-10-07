@@ -1,0 +1,258 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Publishes the SMART data and temperatures of every NVMe drive the app can
+# read through MQTT discovery
+# ==============================================================================
+readonly NODE='nvme_monitor'
+readonly APP_NAME='NVMe Monitor'
+readonly SUPPORT_URL='https://github.com/n-schilling/ha-app-nvme-monitor'
+readonly AVAIL="${NODE}/availability"
+# NVME_SYSFS only for the tests, which cannot fake /sys in a container
+readonly SYSFS=${NVME_SYSFS:-/sys/class/nvme}
+# The app's slug, e.g. e9773f93_nvme_monitor; the Supervisor names the
+# container's host after it
+readonly SLUG=${HOSTNAME//-/_}
+
+PREFIX=$(bashio::config 'discovery_prefix')
+DISCOVERY_PREFIX=${PREFIX}
+INTERVAL=$(bashio::config 'interval')
+EXPIRE=$((INTERVAL * 3))
+# shellcheck disable=SC2034  # used by mqtt-device.sh
+readonly PREFIX DISCOVERY_PREFIX INTERVAL EXPIRE
+bashio::config.has_value 'log_level' && bashio::log.level "$(bashio::config 'log_level')"
+
+bashio::services.available 'mqtt' || bashio::exit.nok 'No MQTT service available'
+
+declare -a MQ
+MQ=(-h "$(bashio::services mqtt 'host')" -p "$(bashio::services mqtt 'port')")
+if bashio::var.has_value "$(bashio::services mqtt 'username')"; then
+    MQ+=(-u "$(bashio::services mqtt 'username')" -P "$(bashio::services mqtt 'password')")
+fi
+readonly MQ
+
+pub() { mosquitto_pub "${MQ[@]}" -r -t "$1" -s; }
+# shellcheck source=../../../../usr/local/lib/mqtt-device.sh
+source /usr/local/lib/mqtt-device.sh
+# Removes a retained message (mosquitto_pub refuses an empty message on stdin)
+clear_topic() { mosquitto_pub "${MQ[@]}" -r -t "$1" -n; }
+
+# Publishes the result of a jq filter on $2 to topic $1; a value the drive
+# does not report (null) is skipped instead of publishing an empty state
+pubj() {
+    local v
+    v=$(jq -j "$3 // empty" <<< "$2" 2>/dev/null) || return 0
+    [[ -n "${v}" ]] && printf '%s' "${v}" | pub "$1"
+    return 0
+}
+
+# Waits in the background, so the stop trap runs at once and not only after
+# the interval (the tests bring their own pause)
+declare -F pause > /dev/null || pause() { sleep "$1" & wait $!; }
+
+# --- Drives ---------------------------------------------------------------------
+# Every controller the app may read (config.yaml maps /dev/nvme0 to nvme3;
+# the Supervisor skips the ones a host does not have). nvme0 keeps the IDs of
+# the versions that only knew one drive.
+declare -a DRIVES=()
+for c in "${SYSFS}"/nvme[0-9]*; do
+    [[ -e "${c}" ]] || continue
+    d=${c##*/}
+    if [[ -e "/dev/${d}" ]] && nvme smart-log "/dev/${d}" -o json > /dev/null 2>&1; then
+        DRIVES+=("${d}")
+    else
+        bashio::log.info "Skipping ${d}: its SMART log is not readable"
+    fi
+done
+(( ${#DRIVES[@]} > 0 )) || bashio::exit.nok 'No readable NVMe drive found'
+readonly DRIVES
+
+drive_node() { [[ "$1" == nvme0 ]] && echo "${NODE}" || echo "${NODE}_$1"; }
+drive_name() { [[ "$1" == nvme0 ]] && echo 'Host NVMe' || echo "Host NVMe ${1#nvme}"; }
+
+CFG_URL="homeassistant://hassio/addon/${SLUG}/info"
+ORIGIN=$(jq -nc --arg app "${APP_NAME}" --arg version "${APP_VERSION:-unknown}" --arg url "${SUPPORT_URL}" \
+    '{name:$app, sw_version:$version, support_url:$url}')
+readonly CFG_URL ORIGIN
+
+drive_device() {
+    local model fw
+    model=$(tr -s ' ' < "${SYSFS}/$1/model" | sed 's/ *$//')
+    fw=$(tr -d ' ' < "${SYSFS}/$1/firmware_rev")
+    jq -nc --arg id "$(drive_node "$1")" --arg name "$(drive_name "$1")" \
+        --arg model "${model}" --arg fw "${fw}" --arg cfg "${CFG_URL}" \
+        '{identifiers:[$id], name:$name, model:$model, sw_version:$fw, configuration_url:$cfg}'
+}
+
+# --- Availability ---------------------------------------------------------------
+# A connection held open with a last will: if the app dies, the broker marks
+# the entities unavailable. A regular stop publishes "offline" itself.
+HOLD_SUB=''
+hold_availability() {
+    trap '[[ -n "${HOLD_SUB}" ]] && kill "${HOLD_SUB}" 2>/dev/null; exit 0' TERM
+    while true; do
+        mosquitto_sub "${MQ[@]}" -i "${SLUG}-availability" -q 1 -t "${AVAIL}" \
+            --will-topic "${AVAIL}" --will-payload offline --will-retain --will-qos 1 \
+            > /dev/null 2>&1 &
+        HOLD_SUB=$!
+        wait "${HOLD_SUB}"
+        sleep 10
+    done
+}
+
+HOLDER=''
+stop() {
+    trap - EXIT TERM INT
+    printf 'offline' | pub "${AVAIL}"
+    [[ -n "${HOLDER}" ]] && kill "${HOLDER}" 2>/dev/null
+    exit 0
+}
+
+# --- Discovery, once and retained ---------------------------------------------
+# One message per drive with all its entities; discover() adds one entity
+# $1 node  $2 device JSON (unused, the drive's message carries it)
+# $3 object_id  $4 display name  $5 platform  $6 extra JSON keys
+COMPONENTS='{}'
+discover() {
+    COMPONENTS=$(jq -c --arg k "$3" --arg name "$4" --arg uid "$1_$3" --arg p "$5" \
+        --arg stt "$1/$3" --argjson exp "${EXPIRE}" --argjson extra "${6:-\{\}}" \
+        '.[$k] = ({platform:$p, name:$name, unique_id:$uid, default_entity_id:($p + "." + $uid),
+                   state_topic:$stt, expire_after:$exp} + $extra)' <<< "${COMPONENTS}")
+}
+
+discover_drive() {
+    local n dev smart
+    n=$(drive_node "$1")
+    dev=$(drive_device "$1")
+    COMPONENTS='{}'
+    smart=$(nvme smart-log "/dev/$1" -o json 2>/dev/null)
+    local temp='{"device_class":"temperature","unit_of_measurement":"°C","state_class":"measurement"}'
+    local diag='"entity_category":"diagnostic"'
+    discover "${n}" "${dev}" temp_composite 'Temperature' sensor "${temp}"
+    # Not every drive has the extra temperature sensors
+    if jq -e '.temperature_sensor_1 != null' <<< "${smart}" > /dev/null 2>&1; then
+        discover "${n}" "${dev}" temp_sensor1 'Temperature sensor 1' sensor "${temp%\}},${diag}}"
+    fi
+    if jq -e '.temperature_sensor_2 != null' <<< "${smart}" > /dev/null 2>&1; then
+        discover "${n}" "${dev}" temp_sensor2 'Controller temperature' sensor "${temp}"
+    fi
+    discover "${n}" "${dev}" data_written 'Data written' sensor \
+        '{"device_class":"data_size","unit_of_measurement":"GB","state_class":"total_increasing",
+          "suggested_display_precision":1,"icon":"mdi:harddisk-plus"}'
+    discover "${n}" "${dev}" percent_used 'Wear' sensor \
+        '{"unit_of_measurement":"%","state_class":"measurement","icon":"mdi:progress-wrench"}'
+    discover "${n}" "${dev}" available_spare 'Available spare' sensor \
+        "{\"unit_of_measurement\":\"%\",\"state_class\":\"measurement\",\"icon\":\"mdi:shield-half-full\",${diag}}"
+    discover "${n}" "${dev}" media_errors 'Media errors' sensor \
+        "{\"state_class\":\"total_increasing\",\"icon\":\"mdi:alert-circle-outline\",${diag}}"
+    discover "${n}" "${dev}" error_log 'Error log entries' sensor \
+        "{\"state_class\":\"total_increasing\",\"icon\":\"mdi:text-box-remove-outline\",${diag}}"
+    discover "${n}" "${dev}" unsafe_shutdowns 'Unsafe shutdowns' sensor \
+        "{\"state_class\":\"total_increasing\",\"icon\":\"mdi:power-plug-off-outline\",${diag}}"
+    discover "${n}" "${dev}" throttle_count 'Thermal throttling events' sensor \
+        '{"state_class":"total_increasing","icon":"mdi:thermometer-alert"}'
+    discover "${n}" "${dev}" throttle_time 'Thermal throttling time' sensor \
+        "{\"device_class\":\"duration\",\"unit_of_measurement\":\"s\",\"state_class\":\"total_increasing\",
+          \"suggested_unit_of_measurement\":\"h\",\"suggested_display_precision\":1,${diag}}"
+    discover "${n}" "${dev}" throttle_active 'Thermal throttling active' binary_sensor \
+        "{\"device_class\":\"heat\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\",
+          \"json_attributes_topic\":\"${n}/throttle_active/attr\"}"
+    discover "${n}" "${dev}" critical_warning 'Critical warning' binary_sensor \
+        '{"device_class":"problem","payload_on":"ON","payload_off":"OFF"}'
+    md_announce "${n}" "$(jq -nc --argjson c "${COMPONENTS}" --argjson dev "${dev}" \
+        --argjson origin "${ORIGIN}" --arg avail "${AVAIL}" \
+        '{device:$dev, origin:$origin, availability_topic:$avail, qos:1, components:$c}')" \
+        "${PREFIX}/+/${n}/+/config"
+}
+
+publish_discovery() {
+    bashio::log.info 'Sending MQTT discovery...'
+    local d
+    for d in "${DRIVES[@]}"; do
+        discover_drive "${d}"
+    done
+    # Host program crashes moved to Crash Guard in 2.0.0: remove the entities
+    # and states of the versions before
+    local t
+    for t in "${PREFIX}/sensor/ha_host/crashes_boot/config" "${PREFIX}/sensor/ha_host/crashes_window/config" \
+             ha_host/crashes_boot ha_host/crashes_window ha_host/crashes_window/attr \
+             "${NODE}/crashes_boot" "${NODE}/crashes_window" "${NODE}/crashes_window/attr"; do
+        clear_topic "${t}"
+    done
+}
+
+# Throttling counters of the previous reading per drive; empty = nothing to
+# compare yet
+declare -A PREV_THROTTLE=()
+
+# Host controlled thermal management thresholds (TMT1/TMT2) and warning
+# thresholds, all relative to the composite temperature, in Kelvin
+publish_thresholds() {
+    local dev="/dev/$1" ctrl hctm stages='{}'
+    ctrl=$(nvme id-ctrl "${dev}" -o json 2>/dev/null) || return 1
+    # Feature 0x10: TMT1 in bits 31:16, TMT2 in bits 15:0; 0 = not set
+    if hctm=$(nvme get-feature "${dev}" -f 0x10 2>/dev/null | grep -o '0x[0-9a-f]*$'); then
+        stages=$(jq -nc --argjson t1 $(( hctm >> 16 )) --argjson t2 $(( hctm & 0xffff )) \
+            '{throttle_stage1_c:(if $t1 > 0 then $t1 - 273 else null end),
+              throttle_stage2_c:(if $t2 > 0 then $t2 - 273 else null end)}')
+    fi
+    jq -c --argjson st "${stages}" \
+        '{warning_temp_c:(if (.wctemp // 0) > 0 then .wctemp - 273 else null end),
+          critical_temp_c:(if (.cctemp // 0) > 0 then .cctemp - 273 else null end)} + $st' <<< "${ctrl}" \
+        | pub "$(drive_node "$1")/throttle_active/attr"
+}
+
+publish_smart() {
+    local j t
+    j=$(nvme smart-log "/dev/$1" -o json 2>/dev/null) || return 1
+    t=$(drive_node "$1")
+    # Active when transitions or throttling time grew since the previous reading
+    local cur active=OFF
+    cur=$(jq -j '"\((.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0)) \((.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0))"' <<< "${j}")
+    if [[ -n "${PREV_THROTTLE[$1]:-}" && "${cur}" != "${PREV_THROTTLE[$1]}" ]]; then
+        active=ON
+        bashio::log.warning "Thermal throttling active on $1 (count/time ${PREV_THROTTLE[$1]} -> ${cur})"
+    fi
+    PREV_THROTTLE[$1]="${cur}"
+    printf '%s' "${active}" | pub "${t}/throttle_active"
+    # nvme-cli reports temperatures in Kelvin and data in units of 512000 bytes
+    pubj "${t}/temp_composite"   "${j}" '.temperature - 273'
+    pubj "${t}/temp_sensor1"     "${j}" '.temperature_sensor_1 | if . == null then null else . - 273 end'
+    pubj "${t}/temp_sensor2"     "${j}" '.temperature_sensor_2 | if . == null then null else . - 273 end'
+    pubj "${t}/data_written"     "${j}" '.data_units_written * 512000 / 1e9 * 100 | round / 100'
+    pubj "${t}/percent_used"     "${j}" '.percent_used'
+    pubj "${t}/available_spare"  "${j}" '.avail_spare'
+    pubj "${t}/media_errors"     "${j}" '.media_errors'
+    pubj "${t}/error_log"        "${j}" '.num_err_log_entries'
+    pubj "${t}/unsafe_shutdowns" "${j}" '.unsafe_shutdowns'
+    pubj "${t}/throttle_count"   "${j}" '(.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0)'
+    pubj "${t}/throttle_time"    "${j}" '(.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0)'
+    pubj "${t}/critical_warning" "${j}" 'if .critical_warning == 0 then "OFF" else "ON" end'
+}
+
+hold_availability &
+HOLDER=$!
+trap stop EXIT TERM INT
+
+publish_discovery
+for d in "${DRIVES[@]}"; do
+    publish_thresholds "${d}" || bashio::log.warning "Temperature thresholds of ${d} not readable"
+    bashio::log.info "Monitoring ${d}: $(jq -r '.model + " (firmware " + .sw_version + ")"' <<< "$(drive_device "${d}")")"
+done
+bashio::log.info "Interval ${INTERVAL}s"
+
+declare -A FAILING=()
+while true; do
+    for d in "${DRIVES[@]}"; do
+        if publish_smart "${d}"; then
+            [[ -n "${FAILING[${d}]:-}" ]] && bashio::log.info "Reading ${d} works again"
+            unset 'FAILING[${d}]'
+        elif [[ -z "${FAILING[${d}]:-}" ]]; then
+            # Once per outage, not on every interval
+            bashio::log.warning "Reading ${d} failed, retrying every interval"
+            FAILING[${d}]=1
+        fi
+    done
+    printf 'online' | pub "${AVAIL}"
+    pause "${INTERVAL}"
+done

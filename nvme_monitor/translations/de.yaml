@@ -1,0 +1,10 @@
+configuration:
+  interval:
+    name: Intervall
+    description: Sekunden zwischen zwei Abfragen des NVMe-SMART-Logs.
+  discovery_prefix:
+    name: MQTT-Discovery-Präfix
+    description: Präfix, auf dem Home Assistant MQTT-Discovery empfängt.
+  log_level:
+    name: Log-Level
+    description: "Wie viel die App in ihr Log schreibt: info, warning oder error."

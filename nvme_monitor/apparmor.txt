@@ -1,0 +1,27 @@
+#include <tunables/global>
+
+# Reads the NVMe SMART log through the admin interface (SYS_ADMIN) and talks
+# to the MQTT broker; writes nothing on the host
+profile nvme_monitor flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  capability chown,
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability kill,
+  capability setgid,
+  capability setuid,
+  capability sys_admin,
+
+  network inet,
+  network inet6,
+  network unix,
+
+  # s6 stops its services; the Supervisor stops the container
+  signal (send, receive),
+
+  file,
+  deny /proc/sys/** w,
+  deny /sys/** w,
+}

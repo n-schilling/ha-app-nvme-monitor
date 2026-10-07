@@ -1,0 +1,11 @@
+#!/bin/bash
+# Stub for nvme-cli: answers from the test fixtures. nvme0 is the drive the
+# tests change between readings, nvme1 one without extra temperature sensors.
+case "$1 $2" in
+    "smart-log /dev/nvme0") cat "${SMART_LOG}" ;;
+    "smart-log /dev/nvme1") cat /tests/fixtures/smart-log-basic.json ;;
+    "id-ctrl /dev/nvme0"|"id-ctrl /dev/nvme1") cat /tests/fixtures/id-ctrl.json ;;
+    "get-feature /dev/nvme0") echo 'get-feature:0x10 (Host Controlled Thermal Management), Current value:0x015f0164' ;;
+    "get-feature /dev/nvme1") echo 'get-feature:0x10 (Host Controlled Thermal Management), Current value:00000000' ;;
+    *) exit 1 ;;
+esac
