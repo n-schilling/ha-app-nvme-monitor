@@ -1,5 +1,5 @@
 name: NVMe Monitor
-version: "2.2.0"
+version: "2.2.1"
 slug: nvme_monitor
 description: Health, wear and temperatures of the host's NVMe drives as Home Assistant sensors via MQTT discovery
 url: https://github.com/n-schilling/ha-app-nvme-monitor
