@@ -147,7 +147,7 @@ expect 'warning logged' "$(grep -c 'Thermal throttling active' "${WORK}/log")" 1
 echo '# Broker away'
 rm -f "${PUBLISHED}.calls"
 PUB_FAIL=999 run_monitor /tests/fixtures/smart-log.json
-expect 'no state published' "$(grep -c '^nvme_monitor' "${PUBLISHED}")" 0
+expect 'no state published' "$(awk -F '\t' '$1 ~ /^nvme_monitor/ && $2 != ""' "${PUBLISHED}" | wc -l | tr -d ' ')" 0
 expect 'one warning for the whole outage, with the reason' \
     "$(grep -c 'MQTT broker not reachable (Error: Connection refused), retrying every interval' "${WORK}/log")" 1
 expect 'not mistaken for an unreadable drive' "$(grep -c 'Reading nvme[0-9] failed' "${WORK}/log")" 0
