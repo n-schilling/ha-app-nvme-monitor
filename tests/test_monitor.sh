@@ -144,6 +144,24 @@ expect 'drive problem with its reason' "$(last nvme_monitor/health_problem)|$(la
     'ON|{"reasons":["critical warning 2"]}'
 expect 'warning logged' "$(grep -c 'Thermal throttling active' "${WORK}/log")" 1
 
+echo '# Broker away'
+rm -f "${PUBLISHED}.calls"
+PUB_FAIL=999 run_monitor /tests/fixtures/smart-log.json
+expect 'no state published' "$(grep -c '^nvme_monitor' "${PUBLISHED}")" 0
+expect 'one warning for the whole outage, with the reason' \
+    "$(grep -c 'MQTT broker not reachable (Error: Connection refused), retrying every interval' "${WORK}/log")" 1
+expect 'not mistaken for an unreadable drive' "$(grep -c 'Reading nvme[0-9] failed' "${WORK}/log")" 0
+expect 'no raw errors from the rounds' "$(grep -c '^Error: ' "${WORK}/log")" 0
+expect 'a round stops at its first failed message (2 rounds + offline on stop)' "$(cat "${PUBLISHED}.calls")" 3
+
+echo '# Broker back'
+rm -f "${PUBLISHED}.calls"
+PUB_FAIL=1 run_monitor /tests/fixtures/smart-log.json
+expect 'warning while away' "$(grep -c 'MQTT broker not reachable' "${WORK}/log")" 1
+expect 'back in the log' "$(grep -c 'MQTT broker answers again' "${WORK}/log")" 1
+expect 'states published again' "$(last nvme_monitor/temp_composite)|$(grep -c '^nvme_monitor/availability	online$' "${PUBLISHED}")" '41|1'
+rm -f "${PUBLISHED}.calls"
+
 if (( FAILED )); then
     echo '--- service log:'
     cat "${WORK}/log"

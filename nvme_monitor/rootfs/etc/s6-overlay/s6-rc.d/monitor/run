@@ -37,13 +37,25 @@ source /usr/local/lib/mqtt-device.sh
 # Removes a retained message (mosquitto_pub refuses an empty message on stdin)
 clear_topic() { mosquitto_pub "${MQ[@]}" -r -t "$1" -n; }
 
-# Publishes the result of a jq filter on $2 to topic $1; a value the drive
-# does not report (null) is skipped instead of publishing an empty state
-pubj() {
+# The states of one round as topic, value, topic, value, ...
+declare -a STATES=()
+# Adds the result of a jq filter on $2 for topic $1; a value the drive does
+# not report (null) is skipped instead of publishing an empty state
+statej() {
     local v
     v=$(jq -j "$3 // empty" <<< "$2" 2>/dev/null) || return 0
-    [[ -n "${v}" ]] && printf '%s' "${v}" | pub "$1"
+    [[ -n "${v}" ]] && STATES+=("$1" "${v}")
     return 0
+}
+
+# Sends STATES. The first message the broker does not take ends it: the rest
+# would fail the same way and only fill the log. PUB_ERROR holds the reason.
+PUB_ERROR=''
+send_states() {
+    local i
+    for (( i = 0; i < ${#STATES[@]}; i += 2 )); do
+        PUB_ERROR=$(printf '%s' "${STATES[i + 1]}" | pub "${STATES[i]}" 2>&1) || return 1
+    done
 }
 
 # Waits in the background, so the stop trap runs at once and not only after
@@ -103,7 +115,8 @@ hold_availability() {
 HOLDER=''
 stop() {
     trap - EXIT TERM INT
-    printf 'offline' | pub "${AVAIL}"
+    # Without a broker the last will of the held connection says offline
+    printf 'offline' | pub "${AVAIL}" 2> /dev/null || true
     [[ -n "${HOLDER}" ]] && kill "${HOLDER}" 2>/dev/null
     exit 0
 }
@@ -190,8 +203,10 @@ publish_discovery() {
 declare -A PREV_THROTTLE=()
 
 # Host controlled thermal management thresholds (TMT1/TMT2) and warning
-# thresholds, all relative to the composite temperature, in Kelvin
-publish_thresholds() {
+# thresholds, all relative to the composite temperature, in Kelvin; read once
+# at the start, sent with every round
+declare -A THRESHOLDS=()
+read_thresholds() {
     local dev="/dev/$1" ctrl hctm stages='{}'
     ctrl=$(nvme id-ctrl "${dev}" -o json 2>/dev/null) || return 1
     # Feature 0x10: TMT1 in bits 31:16, TMT2 in bits 15:0; 0 = not set
@@ -200,13 +215,13 @@ publish_thresholds() {
             '{throttle_stage1_c:(if $t1 > 0 then $t1 - 273 else null end),
               throttle_stage2_c:(if $t2 > 0 then $t2 - 273 else null end)}')
     fi
-    jq -c --argjson st "${stages}" \
+    THRESHOLDS[$1]=$(jq -c --argjson st "${stages}" \
         '{warning_temp_c:(if (.wctemp // 0) > 0 then .wctemp - 273 else null end),
-          critical_temp_c:(if (.cctemp // 0) > 0 then .cctemp - 273 else null end)} + $st' <<< "${ctrl}" \
-        | pub "$(drive_node "$1")/throttle_active/attr"
+          critical_temp_c:(if (.cctemp // 0) > 0 then .cctemp - 273 else null end)} + $st' <<< "${ctrl}")
 }
 
-publish_smart() {
+# Adds the states of a drive to STATES; fails when the drive is not readable
+read_smart() {
     local j t
     j=$(nvme smart-log "/dev/$1" -o json 2>/dev/null) || return 1
     t=$(drive_node "$1")
@@ -218,20 +233,21 @@ publish_smart() {
         bashio::log.warning "Thermal throttling active on $1 (count/time ${PREV_THROTTLE[$1]} -> ${cur})"
     fi
     PREV_THROTTLE[$1]="${cur}"
-    printf '%s' "${active}" | pub "${t}/throttle_active"
+    STATES+=("${t}/throttle_active" "${active}")
+    [[ -n "${THRESHOLDS[$1]:-}" ]] && STATES+=("${t}/throttle_active/attr" "${THRESHOLDS[$1]}")
     # nvme-cli reports temperatures in Kelvin and data in units of 512000 bytes
-    pubj "${t}/temp_composite"   "${j}" '.temperature - 273'
-    pubj "${t}/temp_sensor1"     "${j}" '.temperature_sensor_1 | if . == null then null else . - 273 end'
-    pubj "${t}/temp_sensor2"     "${j}" '.temperature_sensor_2 | if . == null then null else . - 273 end'
-    pubj "${t}/data_written"     "${j}" '.data_units_written * 512000 / 1e9 * 100 | round / 100'
-    pubj "${t}/percent_used"     "${j}" '.percent_used'
-    pubj "${t}/available_spare"  "${j}" '.avail_spare'
-    pubj "${t}/media_errors"     "${j}" '.media_errors'
-    pubj "${t}/error_log"        "${j}" '.num_err_log_entries'
-    pubj "${t}/unsafe_shutdowns" "${j}" '.unsafe_shutdowns'
-    pubj "${t}/throttle_count"   "${j}" '(.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0)'
-    pubj "${t}/throttle_time"    "${j}" '(.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0)'
-    pubj "${t}/critical_warning" "${j}" 'if .critical_warning == 0 then "OFF" else "ON" end'
+    statej "${t}/temp_composite"   "${j}" '.temperature - 273'
+    statej "${t}/temp_sensor1"     "${j}" '.temperature_sensor_1 | if . == null then null else . - 273 end'
+    statej "${t}/temp_sensor2"     "${j}" '.temperature_sensor_2 | if . == null then null else . - 273 end'
+    statej "${t}/data_written"     "${j}" '.data_units_written * 512000 / 1e9 * 100 | round / 100'
+    statej "${t}/percent_used"     "${j}" '.percent_used'
+    statej "${t}/available_spare"  "${j}" '.avail_spare'
+    statej "${t}/media_errors"     "${j}" '.media_errors'
+    statej "${t}/error_log"        "${j}" '.num_err_log_entries'
+    statej "${t}/unsafe_shutdowns" "${j}" '.unsafe_shutdowns'
+    statej "${t}/throttle_count"   "${j}" '(.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0)'
+    statej "${t}/throttle_time"    "${j}" '(.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0)'
+    statej "${t}/critical_warning" "${j}" 'if .critical_warning == 0 then "OFF" else "ON" end'
     # The reasons a drive needs attention; empty = healthy
     local reasons
     reasons=$(jq -c '[
@@ -241,8 +257,8 @@ publish_smart() {
             then "spare at \(.avail_spare) %, threshold \(.spare_thresh) %" else empty end),
         (if (.percent_used // 0) >= 100 then "rated endurance used up (\(.percent_used) %)" else empty end)
     ]' <<< "${j}") || return 1
-    jq -j 'if length > 0 then "ON" else "OFF" end' <<< "${reasons}" | pub "${t}/health_problem"
-    jq -c '{reasons: .}' <<< "${reasons}" | pub "${t}/health_problem/attr"
+    STATES+=("${t}/health_problem" "$(jq -j 'if length > 0 then "ON" else "OFF" end' <<< "${reasons}")"
+             "${t}/health_problem/attr" "$(jq -c '{reasons: .}' <<< "${reasons}")")
 }
 
 hold_availability &
@@ -251,23 +267,33 @@ trap stop EXIT TERM INT
 
 publish_discovery
 for d in "${DRIVES[@]}"; do
-    publish_thresholds "${d}" || bashio::log.warning "Temperature thresholds of ${d} not readable"
+    read_thresholds "${d}" || bashio::log.warning "Temperature thresholds of ${d} not readable"
     bashio::log.info "Monitoring ${d}: $(jq -r '.model + " (firmware " + .sw_version + ")"' <<< "$(drive_device "${d}")")"
 done
 bashio::log.info "Interval ${INTERVAL}s"
 
+# Warnings once per outage, not on every interval
 declare -A FAILING=()
+BROKER_AWAY=0
 while true; do
+    STATES=()
     for d in "${DRIVES[@]}"; do
-        if publish_smart "${d}"; then
+        if read_smart "${d}"; then
             [[ -n "${FAILING[${d}]:-}" ]] && bashio::log.info "Reading ${d} works again"
             unset 'FAILING[${d}]'
         elif [[ -z "${FAILING[${d}]:-}" ]]; then
-            # Once per outage, not on every interval
             bashio::log.warning "Reading ${d} failed, retrying every interval"
             FAILING[${d}]=1
         fi
     done
-    printf 'online' | pub "${AVAIL}"
+    # Again on every round, in case the broker lost its retained messages
+    STATES+=("${AVAIL}" online)
+    if send_states; then
+        (( BROKER_AWAY )) && bashio::log.info 'MQTT broker answers again'
+        BROKER_AWAY=0
+    elif (( ! BROKER_AWAY )); then
+        bashio::log.warning "MQTT broker not reachable (${PUB_ERROR:-no answer}), retrying every interval"
+        BROKER_AWAY=1
+    fi
     pause "${INTERVAL}"
 done
