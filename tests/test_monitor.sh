@@ -20,10 +20,10 @@ done
 printf 'Basic NVMe 1TB\n' > "${NVME_SYSFS}/nvme1/model"
 touch /dev/nvme0 /dev/nvme1
 
-# Runs the service until its loop pauses for the second time. Between the two
-# readings the SMART log switches to $1, so the second one sees a change.
+# Runs the service for two readings, or three with $2. Between the readings
+# the SMART log switches to $1 and then $2, so each one sees a change.
 run_monitor() {
-    export SMART_LOG="${WORK}/smart-log.json" SECOND="$1"
+    export SMART_LOG="${WORK}/smart-log.json" SECOND="$1" THIRD="${2:-}"
     cp /tests/fixtures/smart-log.json "${SMART_LOG}"
     : > "${PUBLISHED}"
     bash -c '
@@ -47,12 +47,18 @@ run_monitor() {
         pauses=0
         pause() {
             pauses=$((pauses + 1))
-            (( pauses >= 2 )) && exit 0
-            cp "${SECOND}" "${SMART_LOG}"
+            case "${pauses}" in
+                1) cp "${SECOND}" "${SMART_LOG}" ;;
+                2) [[ -n "${THIRD}" ]] || exit 0; cp "${THIRD}" "${SMART_LOG}" ;;
+                *) exit 0 ;;
+            esac
         }
         source '"${RUN}"'
     ' > "${WORK}/log" 2>&1
 }
+
+# A SMART log in $WORK: the base fixture changed by the jq filter $2
+variant() { jq -c "$2" /tests/fixtures/smart-log.json > "${WORK}/$1.json"; echo "${WORK}/$1.json"; }
 
 # Last payload published to a topic
 last() { awk -F '\t' -v t="$1" '$1 == t { v = $2 } END { print v }' "${PUBLISHED}"; }
@@ -79,7 +85,7 @@ expect 'no throttling without a change' "$(last nvme_monitor/throttle_active)" O
 expect 'no critical warning' "$(last nvme_monitor/critical_warning)" OFF
 expect 'no drive problem' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" 'OFF|{"reasons":[]}'
 expect 'thresholds from the controller' "$(last nvme_monitor/throttle_active/attr)" \
-    '{"warning_temp_c":70,"critical_temp_c":85,"throttle_stage1_c":78,"throttle_stage2_c":83}'
+    '{"warning_temp_c":70,"critical_temp_c":85,"throttle_stage1_c":78,"throttle_stage2_c":83,"counters_grew_without_heat":false}'
 
 echo '# Second drive without extra temperature sensors'
 dev() { last "homeassistant/device/$1/config"; }
@@ -90,7 +96,7 @@ expect 'its own device' \
     "$(dev nvme_monitor_nvme1 | jq -r '.components.temp_composite.unique_id + " " + .device.name + " " + .device.model')" \
     'nvme_monitor_nvme1_temp_composite Host NVMe 1 Basic NVMe 1TB'
 expect 'unset throttling stages are left out' "$(last nvme_monitor_nvme1/throttle_active/attr)" \
-    '{"warning_temp_c":70,"critical_temp_c":85}'
+    '{"warning_temp_c":70,"critical_temp_c":85,"counters_grew_without_heat":false}'
 expect 'unreadable drive skipped' "$(grep -c 'Skipping nvme2' "${WORK}/log")" 1
 
 echo '# Crash sensors moved to Crash Guard'
@@ -142,7 +148,34 @@ expect 'throttling active after the counters grew' "$(last nvme_monitor/throttle
 expect 'critical warning bit set' "$(last nvme_monitor/critical_warning)" ON
 expect 'drive problem with its reason' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" \
     'ON|{"reasons":["critical warning 2"]}'
-expect 'warning logged' "$(grep -c 'Thermal throttling active' "${WORK}/log")" 1
+expect 'warning logged with the reason' "$(grep -c 'Thermal throttling on nvme0: the drive reports a temperature warning' "${WORK}/log")" 1
+
+# The fixtures throttle at 78 °C and warn at 70 °C, so 60 °C is the lowest
+# temperature that still explains throttling
+echo '# Throttling counters without heat'
+run_monitor "$(variant counter1 '.thm_temp1_trans_count += 30 | .thm_temp1_total_time += 2')" \
+    "$(variant counter2 '.thm_temp1_trans_count += 60 | .thm_temp1_total_time += 3')"
+expect 'not active at 41 °C' "$(grep '^nvme_monitor/throttle_active	' "${PUBLISHED}" | cut -f2 | sort -u)" OFF
+expect 'attribute names the counters' "$(last nvme_monitor/throttle_active/attr | jq -c .counters_grew_without_heat)" true
+expect 'no warning' "$(grep -c 'WARNING' "${WORK}/log")" 0
+expect 'one line for the whole episode' \
+    "$(grep -c 'Throttling counters of nvme0 grow at 41 °C, more than 10 °C below its lowest threshold of 70 °C: not reported as throttling' "${WORK}/log")" 1
+
+echo '# Throttling explained by a temperature'
+run_monitor "$(variant warm '.thm_temp1_trans_count += 30 | .temperature = 333')"
+expect 'active at 60 °C' "$(last nvme_monitor/throttle_active)|$(last nvme_monitor/throttle_active/attr | jq -c .counters_grew_without_heat)" 'ON|false'
+expect 'reason in the warning' "$(grep -c 'Thermal throttling on nvme0: at 60 °C, threshold 70 °C' "${WORK}/log")" 1
+run_monitor "$(variant cool '.thm_temp1_trans_count += 30 | .temperature = 332')"
+expect 'not active at 59 °C' "$(last nvme_monitor/throttle_active)" OFF
+run_monitor "$(variant warning_time '.thm_temp1_trans_count += 30 | .warning_temp_time = 1')"
+expect 'active after time above the warning temperature' "$(last nvme_monitor/throttle_active)" ON
+expect 'that reason in the warning' "$(grep -c 'Thermal throttling on nvme0: above its warning temperature' "${WORK}/log")" 1
+
+echo '# End of throttling'
+hot=$(variant hot '.thm_temp1_trans_count += 30 | .temperature = 345')
+run_monitor "${hot}" "${hot}"
+expect 'off once the counters stand still' "$(last nvme_monitor/throttle_active)" OFF
+expect 'one warning, one end' "$(grep -c 'Thermal throttling on nvme0:' "${WORK}/log")|$(grep -c 'Thermal throttling on nvme0 ended' "${WORK}/log")" '1|1'
 
 echo '# Broker away'
 rm -f "${PUBLISHED}.calls"

@@ -26,7 +26,7 @@ One device per drive: **Host NVMe** for the first one (`nvme0`), **Host NVMe 1**
 | Unsafe shutdowns | Power losses without a clean shutdown (diagnostic) |
 | Thermal throttling events | Transitions into thermal throttling |
 | Thermal throttling time | Total time throttled (diagnostic) |
-| Thermal throttling active | On while throttling grew since the previous reading; attributes carry the drive's warning, critical and throttling thresholds |
+| Thermal throttling active | On while the throttling counters grew since the previous reading and a temperature explains it (see below); attributes carry the drive's warning, critical and throttling thresholds and `counters_grew_without_heat` |
 | Critical warning | On when the drive reports any critical warning |
 | Drive problem | On when the drive needs attention: a critical warning, media errors, the spare at or below the drive's threshold, or the rated endurance used up; the `reasons` attribute names them |
 
@@ -85,6 +85,8 @@ The entity IDs follow the device names; adjust them if you renamed a device.
 - Up to four NVMe drives.
 - Data written is counted by the drive in units of 512 000 bytes and shown in GB.
 - Thermal throttling active compares two readings, so it shows throttling one interval late.
+- Some firmware counts more than thermal throttling in the throttling counters, so they grow at normal temperatures. Thermal throttling active therefore turns on only when the drive also shows heat: a temperature warning, time above its warning or critical temperature, or a composite temperature at most 10 °C below its lowest threshold in one of the two readings. Without any thresholds from the drive the counters alone count. Counters that grow without heat leave the sensor off, set the attribute `counters_grew_without_heat` and are logged once per episode as info; the counter sensors still show the raw values.
+- Throttling is logged once as a warning when it starts and once when it ends.
 
 ## Removing the app
 

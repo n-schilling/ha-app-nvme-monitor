@@ -2,6 +2,14 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-11-01
+
+### Changed
+
+- Thermal throttling active turns on only when the drive also shows heat: a temperature warning, time above its warning or critical temperature, or a composite temperature at most 10 °C below its lowest threshold. Some firmware, for example on the Patriot P300, lets the throttling counters grow at 40 °C, 60 °C below its throttling threshold; that was reported as throttling and logged as a warning every minute
+- Counters that grow without heat set the new attribute `counters_grew_without_heat` and are logged once per episode as info
+- Real throttling is logged once as a warning with its reason when it starts and once when it ends, instead of a warning on every reading
+
 ## [2.2.5] - 2026-10-27
 
 ### Changed

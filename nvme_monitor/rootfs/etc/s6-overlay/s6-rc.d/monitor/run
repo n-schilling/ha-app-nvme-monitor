@@ -198,14 +198,22 @@ publish_discovery() {
     done
 }
 
-# Throttling counters of the previous reading per drive; empty = nothing to
-# compare yet
-declare -A PREV_THROTTLE=()
+# The previous SMART log per drive; empty = nothing to compare yet
+declare -A PREV_SMART=()
+# Throttling as reported for each drive: heat = throttling the temperatures
+# explain, counter = the counters grew without any sign of heat; empty = none
+declare -A THROTTLING=()
+# How far below its lowest threshold the temperature may stay while throttling
+# still counts as explained: the drive throttles between two readings, and
+# the reading may come after it cooled down
+readonly HEAT_MARGIN=10
 
 # Host controlled thermal management thresholds (TMT1/TMT2) and warning
 # thresholds, all relative to the composite temperature, in Kelvin; read once
 # at the start, sent with every round
 declare -A THRESHOLDS=()
+# The lowest of these thresholds in °C; empty = the drive reports none
+declare -A HEAT_LIMIT=()
 read_thresholds() {
     local dev="/dev/$1" ctrl hctm stages='{}'
     ctrl=$(nvme id-ctrl "${dev}" -o json 2>/dev/null) || return 1
@@ -218,6 +226,41 @@ read_thresholds() {
     THRESHOLDS[$1]=$(jq -c --argjson st "${stages}" \
         '{warning_temp_c:(if (.wctemp // 0) > 0 then .wctemp - 273 else null end),
           critical_temp_c:(if (.cctemp // 0) > 0 then .cctemp - 273 else null end)} + $st' <<< "${ctrl}")
+    HEAT_LIMIT[$1]=$(jq -j '[.[] | numbers] | min // empty' <<< "${THRESHOLDS[$1]}")
+}
+
+# Compares two SMART logs of a drive ($1 previous, $2 current, $3 lowest
+# threshold or empty). Prints nothing when the throttling counters did not
+# grow, "heat <reason>" when a temperature explains the throttling and
+# "counter <°C>" when nothing does: some firmware counts more than thermal
+# throttling in these fields, for example at temperatures far below the
+# thresholds
+throttle_verdict() {
+    jq -rn --argjson p "$1" --argjson c "$2" --argjson limit "${3:-null}" --argjson margin "${HEAT_MARGIN}" '
+        def throttle: [(.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0),
+                       (.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0)];
+        def grew(k): ($c[k] // 0) > ($p[k] // 0);
+        (([$p.temperature, $c.temperature] | map(numbers) | max // 273) - 273) as $temp
+        | if ($c | throttle) == ($p | throttle) then empty
+          elif (($c.critical_warning // 0) / 2 | floor) % 2 == 1 then "heat the drive reports a temperature warning"
+          elif grew("critical_comp_time") then "heat above its critical temperature"
+          elif grew("warning_temp_time") then "heat above its warning temperature"
+          elif $limit == null then "heat the drive reports no thresholds to check against"
+          elif $temp >= $limit - $margin then "heat at \($temp) °C, threshold \($limit) °C"
+          else "counter \($temp)" end'
+}
+
+# Logs the start and end of throttling once instead of on every reading
+log_throttling() {
+    local d=$1 kind=${2%% *} detail=${2#* }
+    [[ -n "$2" ]] || kind=''
+    [[ "${kind}" == "${THROTTLING[${d}]:-}" ]] && return 0
+    case "${kind}" in
+        heat) bashio::log.warning "Thermal throttling on ${d}: ${detail}" ;;
+        counter) bashio::log.info "Throttling counters of ${d} grow at ${detail} °C, more than ${HEAT_MARGIN} °C below its lowest threshold of ${HEAT_LIMIT[${d}]} °C: not reported as throttling" ;;
+        *) [[ "${THROTTLING[${d}]:-}" == heat ]] && bashio::log.info "Thermal throttling on ${d} ended" ;;
+    esac
+    THROTTLING[${d}]=${kind}
 }
 
 # Adds the states of a drive to STATES; fails when the drive is not readable
@@ -225,16 +268,20 @@ read_smart() {
     local j t
     j=$(nvme smart-log "/dev/$1" -o json 2>/dev/null) || return 1
     t=$(drive_node "$1")
-    # Active when transitions or throttling time grew since the previous reading
-    local cur active=OFF
-    cur=$(jq -j '"\((.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0)) \((.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0))"' <<< "${j}")
-    if [[ -n "${PREV_THROTTLE[$1]:-}" && "${cur}" != "${PREV_THROTTLE[$1]}" ]]; then
-        active=ON
-        bashio::log.warning "Thermal throttling active on $1 (count/time ${PREV_THROTTLE[$1]} -> ${cur})"
+    # Active when the throttling counters grew since the previous reading and
+    # a temperature explains it
+    local verdict=''
+    if [[ -n "${PREV_SMART[$1]:-}" ]]; then
+        verdict=$(throttle_verdict "${PREV_SMART[$1]}" "${j}" "${HEAT_LIMIT[$1]:-}") || return 1
     fi
-    PREV_THROTTLE[$1]="${cur}"
-    STATES+=("${t}/throttle_active" "${active}")
-    [[ -n "${THRESHOLDS[$1]:-}" ]] && STATES+=("${t}/throttle_active/attr" "${THRESHOLDS[$1]}")
+    PREV_SMART[$1]=$(jq -c . <<< "${j}")
+    log_throttling "$1" "${verdict}"
+    local active=OFF counter=false
+    [[ "${verdict}" == heat* ]] && active=ON
+    [[ "${verdict}" == counter* ]] && counter=true
+    STATES+=("${t}/throttle_active" "${active}"
+             "${t}/throttle_active/attr" "$(jq -c --argjson counter "${counter}" \
+                 '(. // {}) + {counters_grew_without_heat: $counter}' <<< "${THRESHOLDS[$1]:-null}")")
     # nvme-cli reports temperatures in Kelvin and data in units of 512000 bytes
     statej "${t}/temp_composite"   "${j}" '.temperature - 273'
     statej "${t}/temp_sensor1"     "${j}" '.temperature_sensor_1 | if . == null then null else . - 273 end'
