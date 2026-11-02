@@ -12,7 +12,7 @@ readonly DEVICE=homeassistant/device/nvme_monitor/config
 readonly AVAIL=nvme_monitor/availability
 WORK=$(mktemp -d)
 FAILED=0
-export SMART_LOG=/tests/fixtures/smart-log.json NVME_SYSFS="${WORK}/sysfs"
+export SMART_LOG=/tests/fixtures/smart-log.json NVME_SYSFS="${WORK}/sysfs" NVME_STATUS_DIR="${WORK}/status"
 mkdir -p "${NVME_SYSFS}/nvme0"
 printf 'Patriot M.2 P300 256GB\n' > "${NVME_SYSFS}/nvme0/model"
 printf 'H240220a\n' > "${NVME_SYSFS}/nvme0/firmware_rev"
@@ -74,12 +74,15 @@ for e in temp_composite percent_used; do
     jq -nc --arg u "nvme_monitor_${e}" '{unique_id:$u}' \
         | mosquitto_pub -h broker -r -t "homeassistant/sensor/nvme_monitor/${e}/config" -s
 done
+# A retained state of a sensor 3.0.0 no longer has
+printf 41 | mosquitto_pub -h broker -r -t nvme_monitor/temp_composite -s
 start_service
-wait_for '[[ -n "$(retained nvme_monitor/temp_composite)" ]]' 90
-expect 'device message retained' "$(retained "${DEVICE}" | jq '.components | length')" 14
+wait_for '[[ -n "$(retained nvme_monitor/health_problem)" ]]' 90
+expect 'device message retained' "$(retained "${DEVICE}" | jq -c '.components | keys')" '["health_problem"]'
 expect 'old topics removed' "$(retained homeassistant/sensor/nvme_monitor/temp_composite/config)$(retained homeassistant/sensor/nvme_monitor/percent_used/config)" ''
 expect 'hand-over logged' "$(grep -c '2 entities of nvme_monitor moved to device discovery' "${WORK}/log")" 1
-expect 'state retained' "$(retained nvme_monitor/temp_composite)" 41
+expect 'old state removed' "$(retained nvme_monitor/temp_composite)" ''
+expect 'state retained' "$(retained nvme_monitor/health_problem)" OFF
 expect 'online' "$(retained "${AVAIL}")" online
 
 echo '# Regular stop'

@@ -2,6 +2,19 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-02
+
+### Added
+
+- A web page in the sidebar (ingress, administrators only, read only) with the whole SMART log of every drive: health, wear, spare, errors, unsafe shutdowns, the critical warning by name, all temperature sensors and thresholds, throttling, data read and written, power-on hours and power cycles, and the drive's error log when it has entries
+- A history on that page, kept in the app's data: lowest and highest temperature per hour for 30 days, data written per day for 90 days, and the days on which media errors, error log entries, unsafe shutdowns or wear grew
+
+### Changed
+
+- **Breaking:** Home Assistant gets one entity per drive, **Drive problem**. The 13 other sensors (temperatures, data written, wear, available spare, media errors, error log entries, unsafe shutdowns, thermal throttling events, time and active, critical warning) are removed with their retained states; their values are on the web page. Automations and dashboards that use them need to change, and their recorded history stays in Home Assistant until you delete it
+- Drive problem also turns on for thermal throttling the temperatures explain, with the reason `thermal throttling, …`
+- The image contains Python 3 for the web page
+
 ## [2.3.0] - 2026-11-01
 
 ### Changed

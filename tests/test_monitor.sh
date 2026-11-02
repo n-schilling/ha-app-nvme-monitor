@@ -7,7 +7,7 @@ set -u
 
 readonly RUN=/etc/s6-overlay/s6-rc.d/monitor/run
 WORK=$(mktemp -d)
-export PUBLISHED="${WORK}/published" NVME_SYSFS="${WORK}/sysfs" PATH="/tests/stubs:${PATH}" RETAINED="${WORK}/retained"
+export PUBLISHED="${WORK}/published" NVME_SYSFS="${WORK}/sysfs" NVME_STATUS_DIR="${WORK}/status" PATH="/tests/stubs:${PATH}" RETAINED="${WORK}/retained"
 : > "${RETAINED}"
 FAILED=0
 
@@ -26,6 +26,7 @@ run_monitor() {
     export SMART_LOG="${WORK}/smart-log.json" SECOND="$1" THIRD="${2:-}"
     cp /tests/fixtures/smart-log.json "${SMART_LOG}"
     : > "${PUBLISHED}"
+    : > "${PUBLISHED}.sub"
     bash -c '
         source /usr/lib/bashio/bashio.sh
         bashio::config() {
@@ -73,31 +74,36 @@ expect() {
     fi
 }
 
-echo '# Readings'
+# The status file of a drive for the web page, through a jq filter
+status() { jq -c "$2" "${NVME_STATUS_DIR}/$1.json"; }
+dev() { last "homeassistant/device/$1/config"; }
+
+echo '# Drive problem'
 run_monitor /tests/fixtures/smart-log.json
-expect 'composite temperature from Kelvin' "$(last nvme_monitor/temp_composite)" 41
-expect 'controller temperature' "$(last nvme_monitor/temp_sensor2)" 64
-expect 'data written in GB' "$(last nvme_monitor/data_written)" 3347.94
-expect 'wear' "$(last nvme_monitor/percent_used)" 2
-expect 'unsafe shutdowns' "$(last nvme_monitor/unsafe_shutdowns)" 61
-expect 'throttling events, both stages' "$(last nvme_monitor/throttle_count)" 252869
-expect 'no throttling without a change' "$(last nvme_monitor/throttle_active)" OFF
-expect 'no critical warning' "$(last nvme_monitor/critical_warning)" OFF
 expect 'no drive problem' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" 'OFF|{"reasons":[]}'
-expect 'thresholds from the controller' "$(last nvme_monitor/throttle_active/attr)" \
-    '{"warning_temp_c":70,"critical_temp_c":85,"throttle_stage1_c":78,"throttle_stage2_c":83,"counters_grew_without_heat":false}'
+expect 'no other state published' \
+    "$(awk -F '\t' '$1 ~ /^nvme_monitor(_nvme[0-9])?\// && $1 !~ /health_problem|availability/ && $2 != ""' "${PUBLISHED}" | wc -l | tr -d ' ')" 0
+
+echo '# Status file for the web page'
+expect 'whole SMART log' "$(status nvme0 '[.readable, .smart.temperature, .smart.unsafe_shutdowns]')" '[true,314,61]'
+expect 'drive and device' "$(status nvme0 '[.drive, .name, .model, .firmware]')" \
+    '["nvme0","Host NVMe","Patriot M.2 P300 256GB","H240220a"]'
+expect 'thresholds from the controller' "$(status nvme0 .thresholds)" \
+    '{"warning_temp_c":70,"critical_temp_c":85,"throttle_stage1_c":78,"throttle_stage2_c":83}'
+expect 'no throttling, no reasons, no errors' "$(status nvme0 '[.throttling, .reasons, .errors, .heat_margin]')" '[null,[],[],10]'
+expect 'time of the reading' "$(status nvme0 '.at > 1700000000')" true
+expect 'no file left half written' "$(find "${NVME_STATUS_DIR}" -name '*.tmp' | wc -l | tr -d ' ')" 0
 
 echo '# Second drive without extra temperature sensors'
-dev() { last "homeassistant/device/$1/config"; }
-expect 'its own topics' "$(last nvme_monitor_nvme1/temp_composite)" 27
-expect 'no state for a sensor it lacks' "$(grep -c '^nvme_monitor_nvme1/temp_sensor' "${PUBLISHED}")" 0
-expect 'no entity for a sensor it lacks' "$(dev nvme_monitor_nvme1 | jq -c '.components | has("temp_sensor1") or has("temp_sensor2")')" false
+expect 'its own status file' "$(status nvme1 '[.name, .model, .smart.temperature]')" '["Host NVMe 1","Basic NVMe 1TB",300]'
+expect 'unset throttling stages are left out' "$(status nvme1 .thresholds)" '{"warning_temp_c":70,"critical_temp_c":85}'
 expect 'its own device' \
-    "$(dev nvme_monitor_nvme1 | jq -r '.components.temp_composite.unique_id + " " + .device.name + " " + .device.model')" \
-    'nvme_monitor_nvme1_temp_composite Host NVMe 1 Basic NVMe 1TB'
-expect 'unset throttling stages are left out' "$(last nvme_monitor_nvme1/throttle_active/attr)" \
-    '{"warning_temp_c":70,"critical_temp_c":85,"counters_grew_without_heat":false}'
-expect 'unreadable drive skipped' "$(grep -c 'Skipping nvme2' "${WORK}/log")" 1
+    "$(dev nvme_monitor_nvme1 | jq -r '.components.health_problem.unique_id + " " + .device.name + " " + .device.model')" \
+    'nvme_monitor_nvme1_health_problem Host NVMe 1 Basic NVMe 1TB'
+expect 'unreadable drive skipped' "$(grep -c 'Skipping nvme2' "${WORK}/log")|$(find "${NVME_STATUS_DIR}" -name 'nvme2*' | wc -l | tr -d ' ')" '1|0'
+
+echo '# Values moved to the web page'
+expect 'old states removed' "$(grep -c '^nvme_monitor/temp_composite	$' "${PUBLISHED}")|$(grep -c '^nvme_monitor_nvme1/throttle_active/attr	$' "${PUBLISHED}")" '1|1'
 
 echo '# Crash sensors moved to Crash Guard'
 expect 'old crash entities removed' "$(grep -c '^homeassistant/sensor/ha_host/crashes_[a-z]*/config	$' "${PUBLISHED}")" 2
@@ -106,19 +112,34 @@ expect 'no crash entity announced' "$(grep -c 'crashes.*/config	{' "${PUBLISHED}
 
 echo '# Discovery'
 expect 'one message per drive' "$(grep -c '^homeassistant/device/[a-z0-9_]*/config	{' "${PUBLISHED}")" 2
-expect 'all entities of both drives: 13 + 11' \
-    "$(( $(dev nvme_monitor | jq '.components | length') + $(dev nvme_monitor_nvme1 | jq '.components | length') ))" 26
+expect 'one entity per drive' "$(dev nvme_monitor | jq -c '.components | keys')|$(dev nvme_monitor_nvme1 | jq -c '.components | keys')" \
+    '["health_problem"]|["health_problem"]'
+expect 'a problem sensor with the reasons as attribute' \
+    "$(dev nvme_monitor | jq -c '.components.health_problem | [.platform, .device_class, .json_attributes_topic]')" \
+    '["binary_sensor","problem","nvme_monitor/health_problem/attr"]'
 expect 'no single entity topics' "$(grep -c '^homeassistant/[a-z_]*/nvme_monitor[a-z0-9_]*/[a-z0-9_]*/config	{' "${PUBLISHED}")" 0
 expect 'unique ID unchanged (entity IDs depend on it)' \
-    "$(dev nvme_monitor | jq -r .components.temp_composite.unique_id)" nvme_monitor_temp_composite
+    "$(dev nvme_monitor | jq -r .components.health_problem.unique_id)" nvme_monitor_health_problem
 expect 'NVMe model from sysfs, trimmed' \
     "$(dev nvme_monitor | jq -r '.device.model + " " + .device.sw_version')" 'Patriot M.2 P300 256GB H240220a'
-expect 'sensors expire after three intervals' "$(dev nvme_monitor | jq -r .components.temp_composite.expire_after)" 180
+expect 'sensor expires after three intervals' "$(dev nvme_monitor | jq -r .components.health_problem.expire_after)" 180
 expect 'availability for the whole device' "$(dev nvme_monitor | jq -r .availability_topic)" nvme_monitor/availability
 expect 'origin names the app and its support URL' \
     "$(dev nvme_monitor | jq -r '.origin.support_url')" https://github.com/n-schilling/ha-app-nvme-monitor
 expect 'device links to the app page' "$(dev nvme_monitor | jq -r .device.configuration_url)" \
     "homeassistant://hassio/addon/${HOSTNAME//-/_}/info"
+
+echo '# Entities of 2.x removed'
+# The device message of 2.x with two of its 14 entities
+printf '%s\t%s\n' homeassistant/device/nvme_monitor/config \
+    '{"components":{"temp_composite":{"platform":"sensor","unique_id":"nvme_monitor_temp_composite"},"health_problem":{"platform":"binary_sensor"},"throttle_active":{"p":"binary_sensor"}}}' \
+    > "${RETAINED}"
+run_monitor /tests/fixtures/smart-log.json
+expect 'gone entities announced with their platform only' \
+    "$(grep '^homeassistant/device/nvme_monitor/config	' "${PUBLISHED}" | head -1 | cut -f2 | jq -c '.components | {temp_composite, throttle_active}')" \
+    '{"temp_composite":{"platform":"sensor"},"throttle_active":{"platform":"binary_sensor"}}'
+expect 'then left out' "$(dev nvme_monitor | jq -c '.components | keys')" '["health_problem"]'
+: > "${RETAINED}"
 
 echo '# Availability'
 expect 'online after each round' "$(grep -c '^nvme_monitor/availability	online$' "${PUBLISHED}")" 2
@@ -141,13 +162,19 @@ echo '# A worn drive'
 NVME1_LOG=/tests/fixtures/smart-log-worn.json run_monitor /tests/fixtures/smart-log.json
 expect 'drive problem names every reason' "$(last nvme_monitor_nvme1/health_problem)|$(last nvme_monitor_nvme1/health_problem/attr)" \
     'ON|{"reasons":["3 media errors","spare at 8 %, threshold 10 %","rated endurance used up (104 %)"]}'
+expect 'the same reasons in the status file' "$(status nvme1 .reasons | jq length)" 3
+
+echo '# Error log'
+run_monitor "$(variant errors '.num_err_log_entries = 3')"
+expect 'entries with an error only' "$(status nvme0 '[.errors[] | [.error_count, .status_field]]')" '[[2,8194],[1,16388]]'
+expect 'error log entries alone are no drive problem' "$(last nvme_monitor/health_problem)" OFF
 
 echo '# Throttling and critical warning'
 run_monitor /tests/fixtures/smart-log-throttling.json
-expect 'throttling active after the counters grew' "$(last nvme_monitor/throttle_active)" ON
-expect 'critical warning bit set' "$(last nvme_monitor/critical_warning)" ON
-expect 'drive problem with its reason' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" \
-    'ON|{"reasons":["critical warning 2"]}'
+expect 'drive problem with both reasons' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" \
+    'ON|{"reasons":["critical warning 2","thermal throttling, the drive reports a temperature warning"]}'
+expect 'throttling in the status file' "$(status nvme0 .throttling)" \
+    '{"kind":"heat","detail":"the drive reports a temperature warning"}'
 expect 'warning logged with the reason' "$(grep -c 'Thermal throttling on nvme0: the drive reports a temperature warning' "${WORK}/log")" 1
 
 # The fixtures throttle at 78 °C and warn at 70 °C, so 60 °C is the lowest
@@ -155,27 +182,34 @@ expect 'warning logged with the reason' "$(grep -c 'Thermal throttling on nvme0:
 echo '# Throttling counters without heat'
 run_monitor "$(variant counter1 '.thm_temp1_trans_count += 30 | .thm_temp1_total_time += 2')" \
     "$(variant counter2 '.thm_temp1_trans_count += 60 | .thm_temp1_total_time += 3')"
-expect 'not active at 41 °C' "$(grep '^nvme_monitor/throttle_active	' "${PUBLISHED}" | cut -f2 | sort -u)" OFF
-expect 'attribute names the counters' "$(last nvme_monitor/throttle_active/attr | jq -c .counters_grew_without_heat)" true
+expect 'no drive problem at 41 °C' "$(grep '^nvme_monitor/health_problem	' "${PUBLISHED}" | cut -f2 | sort -u)" OFF
+expect 'status file names the counters' "$(status nvme0 .throttling)" '{"kind":"counter","detail":"41"}'
 expect 'no warning' "$(grep -c 'WARNING' "${WORK}/log")" 0
 expect 'one line for the whole episode' \
     "$(grep -c 'Throttling counters of nvme0 grow at 41 °C, more than 10 °C below its lowest threshold of 70 °C: not reported as throttling' "${WORK}/log")" 1
 
 echo '# Throttling explained by a temperature'
 run_monitor "$(variant warm '.thm_temp1_trans_count += 30 | .temperature = 333')"
-expect 'active at 60 °C' "$(last nvme_monitor/throttle_active)|$(last nvme_monitor/throttle_active/attr | jq -c .counters_grew_without_heat)" 'ON|false'
+expect 'drive problem at 60 °C' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" \
+    'ON|{"reasons":["thermal throttling, at 60 °C, threshold 70 °C"]}'
 expect 'reason in the warning' "$(grep -c 'Thermal throttling on nvme0: at 60 °C, threshold 70 °C' "${WORK}/log")" 1
 run_monitor "$(variant cool '.thm_temp1_trans_count += 30 | .temperature = 332')"
-expect 'not active at 59 °C' "$(last nvme_monitor/throttle_active)" OFF
+expect 'no drive problem at 59 °C' "$(last nvme_monitor/health_problem)" OFF
 run_monitor "$(variant warning_time '.thm_temp1_trans_count += 30 | .warning_temp_time = 1')"
-expect 'active after time above the warning temperature' "$(last nvme_monitor/throttle_active)" ON
+expect 'drive problem after time above the warning temperature' "$(last nvme_monitor/health_problem)" ON
 expect 'that reason in the warning' "$(grep -c 'Thermal throttling on nvme0: above its warning temperature' "${WORK}/log")" 1
 
 echo '# End of throttling'
 hot=$(variant hot '.thm_temp1_trans_count += 30 | .temperature = 345')
 run_monitor "${hot}" "${hot}"
-expect 'off once the counters stand still' "$(last nvme_monitor/throttle_active)" OFF
+expect 'off once the counters stand still' "$(last nvme_monitor/health_problem)|$(status nvme0 .throttling)" 'OFF|null'
 expect 'one warning, one end' "$(grep -c 'Thermal throttling on nvme0:' "${WORK}/log")|$(grep -c 'Thermal throttling on nvme0 ended' "${WORK}/log")" '1|1'
+
+echo '# Unreadable drive'
+: > "${WORK}/empty.json"
+run_monitor "${WORK}/empty.json"
+expect 'status file keeps the last log' "$(status nvme0 '[.readable, .smart.temperature]')" '[false,314]'
+expect 'one warning' "$(grep -c 'Reading nvme0 failed, retrying every interval' "${WORK}/log")" 1
 
 echo '# Broker away'
 rm -f "${PUBLISHED}.calls"
@@ -192,7 +226,7 @@ rm -f "${PUBLISHED}.calls"
 PUB_FAIL=1 run_monitor /tests/fixtures/smart-log.json
 expect 'warning while away' "$(grep -c 'MQTT broker not reachable' "${WORK}/log")" 1
 expect 'back in the log' "$(grep -c 'MQTT broker answers again' "${WORK}/log")" 1
-expect 'states published again' "$(last nvme_monitor/temp_composite)|$(grep -c '^nvme_monitor/availability	online$' "${PUBLISHED}")" '41|1'
+expect 'states published again' "$(last nvme_monitor/health_problem)|$(grep -c '^nvme_monitor/availability	online$' "${PUBLISHED}")" 'OFF|1'
 rm -f "${PUBLISHED}.calls"
 
 if (( FAILED )); then

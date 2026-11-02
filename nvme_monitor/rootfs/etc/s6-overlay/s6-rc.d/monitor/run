@@ -1,8 +1,9 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# Publishes the SMART data and temperatures of every NVMe drive the app can
-# read through MQTT discovery
+# Reads the SMART log of every NVMe drive the app can read. Home Assistant
+# gets one Drive problem sensor per drive through MQTT discovery; the whole
+# log goes to STATUS_DIR, from which the web page shows it.
 # ==============================================================================
 readonly NODE='nvme_monitor'
 readonly APP_NAME='NVMe Monitor'
@@ -10,6 +11,8 @@ readonly SUPPORT_URL='https://github.com/n-schilling/ha-app-nvme-monitor'
 readonly AVAIL="${NODE}/availability"
 # NVME_SYSFS only for the tests, which cannot fake /sys in a container
 readonly SYSFS=${NVME_SYSFS:-/sys/class/nvme}
+# One file per drive for the web page; NVME_STATUS_DIR only for the tests
+readonly STATUS_DIR=${NVME_STATUS_DIR:-/run/nvme-monitor}
 # The app's slug, e.g. e9773f93_nvme_monitor; the Supervisor names the
 # container's host after it
 readonly SLUG=${HOSTNAME//-/_}
@@ -134,45 +137,12 @@ discover() {
 }
 
 discover_drive() {
-    local n dev smart
+    local n dev
     n=$(drive_node "$1")
     dev=$(drive_device "$1")
     COMPONENTS='{}'
-    smart=$(nvme smart-log "/dev/$1" -o json 2>/dev/null)
-    local temp='{"device_class":"temperature","unit_of_measurement":"°C","state_class":"measurement"}'
-    local diag='"entity_category":"diagnostic"'
-    discover "${n}" "${dev}" temp_composite 'Temperature' sensor "${temp}"
-    # Not every drive has the extra temperature sensors
-    if jq -e '.temperature_sensor_1 != null' <<< "${smart}" > /dev/null 2>&1; then
-        discover "${n}" "${dev}" temp_sensor1 'Temperature sensor 1' sensor "${temp%\}},${diag}}"
-    fi
-    if jq -e '.temperature_sensor_2 != null' <<< "${smart}" > /dev/null 2>&1; then
-        discover "${n}" "${dev}" temp_sensor2 'Controller temperature' sensor "${temp}"
-    fi
-    discover "${n}" "${dev}" data_written 'Data written' sensor \
-        '{"device_class":"data_size","unit_of_measurement":"GB","state_class":"total_increasing",
-          "suggested_display_precision":1,"icon":"mdi:harddisk-plus"}'
-    discover "${n}" "${dev}" percent_used 'Wear' sensor \
-        '{"unit_of_measurement":"%","state_class":"measurement","icon":"mdi:progress-wrench"}'
-    discover "${n}" "${dev}" available_spare 'Available spare' sensor \
-        "{\"unit_of_measurement\":\"%\",\"state_class\":\"measurement\",\"icon\":\"mdi:shield-half-full\",${diag}}"
-    discover "${n}" "${dev}" media_errors 'Media errors' sensor \
-        "{\"state_class\":\"total_increasing\",\"icon\":\"mdi:alert-circle-outline\",${diag}}"
-    discover "${n}" "${dev}" error_log 'Error log entries' sensor \
-        "{\"state_class\":\"total_increasing\",\"icon\":\"mdi:text-box-remove-outline\",${diag}}"
-    discover "${n}" "${dev}" unsafe_shutdowns 'Unsafe shutdowns' sensor \
-        "{\"state_class\":\"total_increasing\",\"icon\":\"mdi:power-plug-off-outline\",${diag}}"
-    discover "${n}" "${dev}" throttle_count 'Thermal throttling events' sensor \
-        '{"state_class":"total_increasing","icon":"mdi:thermometer-alert"}'
-    discover "${n}" "${dev}" throttle_time 'Thermal throttling time' sensor \
-        "{\"device_class\":\"duration\",\"unit_of_measurement\":\"s\",\"state_class\":\"total_increasing\",
-          \"suggested_unit_of_measurement\":\"h\",\"suggested_display_precision\":1,${diag}}"
-    discover "${n}" "${dev}" throttle_active 'Thermal throttling active' binary_sensor \
-        "{\"device_class\":\"heat\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\",
-          \"json_attributes_topic\":\"${n}/throttle_active/attr\"}"
-    discover "${n}" "${dev}" critical_warning 'Critical warning' binary_sensor \
-        '{"device_class":"problem","payload_on":"ON","payload_off":"OFF"}'
-    # One entity for automations: on for any sign that the drive needs attention
+    # The only entity: on for any sign that the drive needs attention. The
+    # values themselves are on the web page
     discover "${n}" "${dev}" health_problem 'Drive problem' binary_sensor \
         "{\"device_class\":\"problem\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\",
           \"json_attributes_topic\":\"${n}/health_problem/attr\"}"
@@ -185,16 +155,23 @@ discover_drive() {
 publish_discovery() {
     bashio::log.info 'Sending MQTT discovery...'
     local d
+    local d t
     for d in "${DRIVES[@]}"; do
         discover_drive "${d}"
+        # The values moved to the web page in 3.0.0: remove the retained
+        # states of the sensors before; md_announce removed their entities
+        for t in temp_composite temp_sensor1 temp_sensor2 data_written percent_used available_spare \
+                 media_errors error_log unsafe_shutdowns throttle_count throttle_time throttle_active \
+                 throttle_active/attr critical_warning; do
+            clear_topic "$(drive_node "${d}")/${t}" || true
+        done
     done
     # Host program crashes moved to Crash Guard in 2.0.0: remove the entities
     # and states of the versions before
-    local t
     for t in "${PREFIX}/sensor/ha_host/crashes_boot/config" "${PREFIX}/sensor/ha_host/crashes_window/config" \
              ha_host/crashes_boot ha_host/crashes_window ha_host/crashes_window/attr \
              "${NODE}/crashes_boot" "${NODE}/crashes_window" "${NODE}/crashes_window/attr"; do
-        clear_topic "${t}"
+        clear_topic "${t}" || true
     done
 }
 
@@ -214,6 +191,8 @@ readonly HEAT_MARGIN=10
 declare -A THRESHOLDS=()
 # The lowest of these thresholds in °C; empty = the drive reports none
 declare -A HEAT_LIMIT=()
+# The drive's capacity in bytes; empty = not reported
+declare -A CAPACITY=()
 read_thresholds() {
     local dev="/dev/$1" ctrl hctm stages='{}'
     ctrl=$(nvme id-ctrl "${dev}" -o json 2>/dev/null) || return 1
@@ -227,6 +206,7 @@ read_thresholds() {
         '{warning_temp_c:(if (.wctemp // 0) > 0 then .wctemp - 273 else null end),
           critical_temp_c:(if (.cctemp // 0) > 0 then .cctemp - 273 else null end)} + $st' <<< "${ctrl}")
     HEAT_LIMIT[$1]=$(jq -j '[.[] | numbers] | min // empty' <<< "${THRESHOLDS[$1]}")
+    CAPACITY[$1]=$(jq -j '.tnvmcap // empty' <<< "${ctrl}")
 }
 
 # Compares two SMART logs of a drive ($1 previous, $2 current, $3 lowest
@@ -263,51 +243,60 @@ log_throttling() {
     THROTTLING[${d}]=${kind}
 }
 
+# Writes the status file of drive $1 for the web page: $2 the SMART log or
+# empty when it was not readable, $3 the throttling verdict, $4 the reasons
+write_status() {
+    local d=$1 smart=${2:-null} errors='[]' file="${STATUS_DIR}/$1.json"
+    # The entries themselves only when the drive counted some
+    if [[ "${smart}" != null ]] && jq -e '(.num_err_log_entries // 0) > 0' <<< "${smart}" > /dev/null; then
+        errors=$(nvme error-log "/dev/${d}" -o json -e 16 2>/dev/null \
+            | jq -c '[.errors[]? | select(.error_count > 0)]' 2>/dev/null) || errors='[]'
+        [[ -n "${errors}" ]] || errors='[]'
+    fi
+    jq -nc --arg drive "${d}" --arg name "$(drive_name "${d}")" --argjson device "$(drive_device "${d}")" \
+        --argjson at "$(date +%s)" --argjson smart "${smart}" --argjson prev "${PREV_SMART[${d}]:-null}" \
+        --argjson thresholds "${THRESHOLDS[${d}]:-null}" --argjson capacity "${CAPACITY[${d}]:-null}" \
+        --arg verdict "${3:-}" --argjson reasons "${4:-[]}" --argjson errors "${errors}" \
+        --argjson margin "${HEAT_MARGIN}" '
+        {drive:$drive, name:$name, model:$device.model, firmware:$device.sw_version, capacity:$capacity, at:$at,
+         readable:($smart != null), smart:($smart // $prev), thresholds:$thresholds, heat_margin:$margin,
+         throttling:(if $verdict == "" then null
+                     else {kind:($verdict | split(" ")[0]), detail:($verdict | sub("^[a-z]+ "; ""))} end), reasons:$reasons, errors:$errors}' \
+        > "${file}.tmp" && mv "${file}.tmp" "${file}" \
+        || bashio::log.warning "Cannot write the status of ${d} for the web page"
+}
+
 # Adds the states of a drive to STATES; fails when the drive is not readable
 read_smart() {
     local j t
     j=$(nvme smart-log "/dev/$1" -o json 2>/dev/null) || return 1
     t=$(drive_node "$1")
-    # Active when the throttling counters grew since the previous reading and
-    # a temperature explains it
+    # Throttling when the counters grew since the previous reading and a
+    # temperature explains it
     local verdict=''
     if [[ -n "${PREV_SMART[$1]:-}" ]]; then
         verdict=$(throttle_verdict "${PREV_SMART[$1]}" "${j}" "${HEAT_LIMIT[$1]:-}") || return 1
     fi
     PREV_SMART[$1]=$(jq -c . <<< "${j}")
     log_throttling "$1" "${verdict}"
-    local active=OFF counter=false
-    [[ "${verdict}" == heat* ]] && active=ON
-    [[ "${verdict}" == counter* ]] && counter=true
-    STATES+=("${t}/throttle_active" "${active}"
-             "${t}/throttle_active/attr" "$(jq -c --argjson counter "${counter}" \
-                 '(. // {}) + {counters_grew_without_heat: $counter}' <<< "${THRESHOLDS[$1]:-null}")")
-    # nvme-cli reports temperatures in Kelvin and data in units of 512000 bytes
-    statej "${t}/temp_composite"   "${j}" '.temperature - 273'
-    statej "${t}/temp_sensor1"     "${j}" '.temperature_sensor_1 | if . == null then null else . - 273 end'
-    statej "${t}/temp_sensor2"     "${j}" '.temperature_sensor_2 | if . == null then null else . - 273 end'
-    statej "${t}/data_written"     "${j}" '.data_units_written * 512000 / 1e9 * 100 | round / 100'
-    statej "${t}/percent_used"     "${j}" '.percent_used'
-    statej "${t}/available_spare"  "${j}" '.avail_spare'
-    statej "${t}/media_errors"     "${j}" '.media_errors'
-    statej "${t}/error_log"        "${j}" '.num_err_log_entries'
-    statej "${t}/unsafe_shutdowns" "${j}" '.unsafe_shutdowns'
-    statej "${t}/throttle_count"   "${j}" '(.thm_temp1_trans_count // 0) + (.thm_temp2_trans_count // 0)'
-    statej "${t}/throttle_time"    "${j}" '(.thm_temp1_total_time // 0) + (.thm_temp2_total_time // 0)'
-    statej "${t}/critical_warning" "${j}" 'if .critical_warning == 0 then "OFF" else "ON" end'
+    local heat=''
+    [[ "${verdict}" == heat* ]] && heat=${verdict#heat }
     # The reasons a drive needs attention; empty = healthy
     local reasons
-    reasons=$(jq -c '[
+    reasons=$(jq -c --arg heat "${heat}" '[
         (if (.critical_warning // 0) != 0 then "critical warning \(.critical_warning)" else empty end),
         (if (.media_errors // 0) > 0 then "\(.media_errors) media errors" else empty end),
         (if .avail_spare != null and .spare_thresh != null and .avail_spare <= .spare_thresh
             then "spare at \(.avail_spare) %, threshold \(.spare_thresh) %" else empty end),
-        (if (.percent_used // 0) >= 100 then "rated endurance used up (\(.percent_used) %)" else empty end)
+        (if (.percent_used // 0) >= 100 then "rated endurance used up (\(.percent_used) %)" else empty end),
+        (if $heat != "" then "thermal throttling, \($heat)" else empty end)
     ]' <<< "${j}") || return 1
     STATES+=("${t}/health_problem" "$(jq -j 'if length > 0 then "ON" else "OFF" end' <<< "${reasons}")"
              "${t}/health_problem/attr" "$(jq -c '{reasons: .}' <<< "${reasons}")")
+    write_status "$1" "${j}" "${verdict}" "${reasons}"
 }
 
+mkdir -p "${STATUS_DIR}"
 hold_availability &
 HOLDER=$!
 trap stop EXIT TERM INT
@@ -328,9 +317,13 @@ while true; do
         if read_smart "${d}"; then
             [[ -n "${FAILING[${d}]:-}" ]] && bashio::log.info "Reading ${d} works again"
             unset 'FAILING[${d}]'
-        elif [[ -z "${FAILING[${d}]:-}" ]]; then
-            bashio::log.warning "Reading ${d} failed, retrying every interval"
-            FAILING[${d}]=1
+        else
+            # The page shows the last readable log and since when it fails
+            [[ -n "${FAILING[${d}]:-}" ]] || write_status "${d}" ''
+            if [[ -z "${FAILING[${d}]:-}" ]]; then
+                bashio::log.warning "Reading ${d} failed, retrying every interval"
+                FAILING[${d}]=1
+            fi
         fi
     done
     # Again on every round, in case the broker lost its retained messages

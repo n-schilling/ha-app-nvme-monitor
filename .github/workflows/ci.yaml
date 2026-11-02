@@ -26,9 +26,11 @@ jobs:
       - name: Shell scripts
         run: >-
           shellcheck --shell=bash --severity=warning --external-sources
-          nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/monitor/run
+          nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/*/run
           nvme_monitor/rootfs/usr/local/lib/mqtt-device.sh
           tests/test_monitor.sh tests/test_broker.sh tests/stubs/nvme tests/stubs/mosquitto_*
+      - name: Python
+        run: pipx run ruff==0.17.3 check nvme_monitor/rootfs/usr/local/lib tests
 
   test:
     name: Build and test (${{ matrix.arch }})
@@ -63,6 +65,13 @@ jobs:
           docker run --rm --network none --platform "${PLATFORM}"
           -v "${PWD}/tests:/tests:ro" --entrypoint bash nvme-monitor:test
           /tests/test_monitor.sh
+      - name: Test the web page
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: >-
+          docker run --rm --network none --platform "${PLATFORM}"
+          -v "${PWD}/tests:/tests:ro" --entrypoint python3 nvme-monitor:test
+          -m unittest discover -v -s /tests -p 'test_*.py'
 
   broker:
     name: Against a real MQTT broker

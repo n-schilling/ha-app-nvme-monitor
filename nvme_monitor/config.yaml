@@ -1,13 +1,16 @@
 name: NVMe Monitor
-version: "2.3.0"
+version: "3.0.0"
 slug: nvme_monitor
-description: Health, wear and temperatures of the host's NVMe drives as Home Assistant sensors via MQTT discovery
+description: Health, wear and temperatures of the host's NVMe drives on a web page, with a Drive problem sensor via MQTT discovery
 url: https://github.com/n-schilling/ha-app-nvme-monitor
 arch:
   - aarch64
   - amd64
 startup: services
 init: false
+ingress: true
+panel_icon: mdi:harddisk
+panel_title: NVMe
 services:
   - mqtt:need
 privileged:

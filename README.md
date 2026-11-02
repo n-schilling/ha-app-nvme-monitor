@@ -9,7 +9,7 @@
 
 ![NVMe Monitor](nvme_monitor/logo.png)
 
-A Home Assistant app (formerly add-on) that publishes the health, wear and temperatures of the host's NVMe drives as sensors through MQTT discovery. Crashes of host programs are covered by the [Crash Guard](https://github.com/n-schilling/ha-app-crash-guard) app.
+A Home Assistant app (formerly add-on) that shows the health, wear, temperatures and history of the host's NVMe drives on a web page in the sidebar, and publishes one Drive problem sensor per drive through MQTT discovery for automations. Crashes of host programs are covered by the [Crash Guard](https://github.com/n-schilling/ha-app-crash-guard) app.
 
 ## Installation
 
@@ -26,7 +26,7 @@ A Home Assistant app (formerly add-on) that publishes the health, wear and tempe
 2. Open the app from the app store.
 3. Install **NVMe Monitor** and start it.
 
-See [the documentation](nvme_monitor/DOCS.md) for the sensors, options, example automations and troubleshooting. Changes are listed in the [changelog](nvme_monitor/CHANGELOG.md).
+See [the documentation](nvme_monitor/DOCS.md) for the web page, the sensor, options, an example automation and troubleshooting. Changes are listed in the [changelog](nvme_monitor/CHANGELOG.md).
 
 ## Support
 

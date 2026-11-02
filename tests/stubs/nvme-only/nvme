@@ -7,5 +7,6 @@ case "$1 $2" in
     "id-ctrl /dev/nvme0"|"id-ctrl /dev/nvme1") cat /tests/fixtures/id-ctrl.json ;;
     "get-feature /dev/nvme0") echo 'get-feature:0x10 (Host Controlled Thermal Management), Current value:0x015f0164' ;;
     "get-feature /dev/nvme1") echo 'get-feature:0x10 (Host Controlled Thermal Management), Current value:00000000' ;;
+    "error-log /dev/nvme0") cat /tests/fixtures/error-log.json ;;
     *) exit 1 ;;
 esac

@@ -10,6 +10,7 @@ RUN \
         nvme-cli \
         mosquitto-clients \
         jq \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY rootfs /
