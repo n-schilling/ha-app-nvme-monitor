@@ -1,6 +1,6 @@
 # NVMe Monitor
 
-Health, wear and temperatures of the host's NVMe drives on a web page in the sidebar, with a Drive problem sensor via MQTT discovery.
+Health, wear and temperatures of the host's NVMe drives on a page of its own in Home Assistant, with a Drive problem sensor via MQTT discovery.
 
 ![Supports aarch64 Architecture][aarch64-shield]
 ![Supports amd64 Architecture][amd64-shield]
