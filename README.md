@@ -11,6 +11,14 @@
 
 A Home Assistant app that shows the health, wear, temperatures and history of the host's NVMe drives on a page of its own in Home Assistant, and publishes one Drive problem sensor per drive through MQTT discovery for automations. Crashes of host programs are covered by the [Crash Guard](https://github.com/n-schilling/ha-app-crash-guard) app.
 
+## The web page
+
+The page (**NVMe** in the sidebar, or **Open web UI** on the app's page) looks like Home Assistant's settings and takes over the theme in use. The screenshots show made-up demo data.
+
+| Drive, health and temperatures | History |
+|---|---|
+| ![Status, SMART values, thermal throttling and temperatures of a drive](docs/screenshots/overview.png) | ![Temperature per hour, data written per day and days on which a counter of trouble grew](docs/screenshots/history.png) |
+
 ## Installation
 
 1. Add the repository to your Home Assistant instance:
