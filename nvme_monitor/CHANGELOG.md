@@ -18,6 +18,7 @@ All notable changes to this app are documented here. The format follows [Keep a 
 - Without any NVMe drive or MQTT service the app stops with a fatal error in its log, instead of restarting every second
 - Requires Home Assistant 2026.11 or later; the documentation follows its terms, with an overview, the flow of a reading and the states of the sensor as diagrams, and new screenshots
 - The web page uses the stylesheet all apps of this author share, closer to Home Assistant's own look
+- The README explains how to work on the app: where the code is, how to run the checks and how a release is made
 - Built on `home-assistant/base-debian:trixie-2026.11.0`, pinned, so a rebuild gives the same image; Dependabot proposes new versions
 
 ### Fixed

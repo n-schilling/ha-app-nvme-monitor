@@ -58,6 +58,18 @@ The monitor reads every drive once per interval, judges whether it needs attenti
 
 See [the documentation](nvme_monitor/DOCS.md) for the options, the web page, the sensor, an example automation and troubleshooting. Changes are listed in the [changelog](nvme_monitor/CHANGELOG.md).
 
+## Development
+
+The monitor is a bash script, [`monitor/run`](nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/monitor/run), the web page a Python program without third-party packages, [`nvme_web.py`](nvme_monitor/rootfs/usr/local/lib/nvme_web.py); the image installs only Debian packages. The page's look comes from the stylesheet shared by these apps, [`ha.css`](nvme_monitor/rootfs/usr/local/share/ha-app/ha.css), which stays identical in every app.
+
+```bash
+scripts/check.sh
+```
+
+`scripts/check.sh` runs what CI runs (changelog, shellcheck, ruff, the image built for this machine with the tests of the monitor, the image and the web page, and the test against a real MQTT broker; `--no-docker` skips everything that needs Docker). It needs bash, Python 3 and Docker; shellcheck and ruff come from Docker and `uvx` when they are not installed. The screenshots come from `scripts/screenshots.py` (see its header for the setup): it renders the page with made-up data and draws it with a headless browser.
+
+Releases: work on `dev`, raise `version` in `nvme_monitor/config.yaml` and add its section to the changelog; when CI is green on `main`, the release workflow tags the version and publishes the release with that section.
+
 ## Support
 
 Questions, bugs and ideas: [open an issue](https://github.com/n-schilling/ha-app-nvme-monitor/issues/new/choose) in this repository. Security problems: see [SECURITY.md](SECURITY.md).
