@@ -8,12 +8,15 @@
 readonly USER_NAME=nvmeweb
 readonly DIR=/data/web
 
-# The history belongs to the page's user; 3.0.0 kept it in /data itself
+# The history belongs to the page's user; 3.0.0 kept it in /data itself.
+# The file changes owner while it is still in /data, which only root can
+# write to; nothing in the user's folder is touched as root.
 install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 700 "${DIR}"
-if [[ -f /data/history.json && ! -e "${DIR}/history.json" ]]; then
-    mv /data/history.json "${DIR}/history.json"
+if [[ -f /data/history.json && ! -L /data/history.json ]]; then
+    chown "${USER_NAME}:${USER_NAME}" /data/history.json
+    mv -n /data/history.json "${DIR}/history.json"
+    rm -f /data/history.json
 fi
-find "${DIR}" -xdev ! -user "${USER_NAME}" -exec chown -h "${USER_NAME}:${USER_NAME}" {} +
 
 # The options file is root's; the page only needs the interval
 NVME_INTERVAL=$(bashio::config 'interval')
