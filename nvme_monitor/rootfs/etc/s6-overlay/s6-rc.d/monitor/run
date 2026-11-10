@@ -25,31 +25,48 @@ EXPIRE=$((INTERVAL * 3))
 readonly PREFIX DISCOVERY_PREFIX INTERVAL EXPIRE
 bashio::config.has_value 'log_level' && bashio::log.level "$(bashio::config 'log_level')"
 
-bashio::services.available 'mqtt' || bashio::exit.nok 'No MQTT service available'
+# Stops the whole app instead of letting s6 restart the service every
+# second: nothing changes until the user does something
+fatal() {
+    bashio::log.fatal "$1"
+    echo 1 > /run/s6-linux-init-container-results/exitcode 2>/dev/null || true
+    exec /run/s6/basedir/bin/halt
+}
 
-declare -a MQ
-MQ=(-h "$(bashio::services mqtt 'host')" -p "$(bashio::services mqtt 'port')")
-if bashio::var.has_value "$(bashio::services mqtt 'username')"; then
-    MQ+=(-u "$(bashio::services mqtt 'username')" -P "$(bashio::services mqtt 'password')")
-fi
-readonly MQ
+bashio::services.available 'mqtt' || fatal 'No MQTT service available; install and set up the MQTT broker first'
 
-pub() { mosquitto_pub "${MQ[@]}" -r -t "$1" -s; }
+# The broker's address and credentials go to the configuration files the
+# mosquitto clients read themselves, not on their command line, where every
+# process that can list processes would see the password. The folder is
+# root's only, so the web page cannot read it.
+readonly MQTT_CONFIG=${NVME_MQTT_CONFIG:-/run/nvme-monitor-mqtt}
+write_mqtt_config() {
+    local -a lines=("-h $(bashio::services mqtt 'host')" "-p $(bashio::services mqtt 'port')")
+    local user c
+    user=$(bashio::services mqtt 'username')
+    if bashio::var.has_value "${user}"; then
+        lines+=("-u ${user}" "-P $(bashio::services mqtt 'password')")
+    fi
+    # A broker that wants TLS gets it, checked against the system's CAs
+    if bashio::var.true "$(bashio::services mqtt 'ssl')"; then
+        lines+=('--capath /etc/ssl/certs')
+    fi
+    install -d -m 700 "${MQTT_CONFIG}"
+    for c in mosquitto_pub mosquitto_sub; do
+        ( umask 077; printf '%s\n' "${lines[@]}" > "${MQTT_CONFIG}/${c}" )
+    done
+}
+write_mqtt_config
+export XDG_CONFIG_HOME=${MQTT_CONFIG}
+
+pub() { mosquitto_pub -r -t "$1" -s; }
 # shellcheck source=../../../../usr/local/lib/mqtt-device.sh
 source /usr/local/lib/mqtt-device.sh
 # Removes a retained message (mosquitto_pub refuses an empty message on stdin)
-clear_topic() { mosquitto_pub "${MQ[@]}" -r -t "$1" -n; }
+clear_topic() { mosquitto_pub -r -t "$1" -n; }
 
 # The states of one round as topic, value, topic, value, ...
 declare -a STATES=()
-# Adds the result of a jq filter on $2 for topic $1; a value the drive does
-# not report (null) is skipped instead of publishing an empty state
-statej() {
-    local v
-    v=$(jq -j "$3 // empty" <<< "$2" 2>/dev/null) || return 0
-    [[ -n "${v}" ]] && STATES+=("$1" "${v}")
-    return 0
-}
 
 # Sends STATES. The first message the broker does not take ends it: the rest
 # would fail the same way and only fill the log. PUB_ERROR holds the reason.
@@ -68,18 +85,20 @@ declare -F pause > /dev/null || pause() { sleep "$1" & wait $!; }
 # --- Drives ---------------------------------------------------------------------
 # Every controller the app may read (config.yaml maps /dev/nvme0 to nvme3;
 # the Supervisor skips the ones a host does not have). nvme0 keeps the IDs of
-# the versions that only knew one drive.
+# the versions that only knew one drive. A drive whose SMART log fails at the
+# start is monitored all the same: the main loop reports it and tries again
+# every interval, so a drive that is slow after the boot is not lost.
 declare -a DRIVES=()
 for c in "${SYSFS}"/nvme[0-9]*; do
     [[ -e "${c}" ]] || continue
     d=${c##*/}
-    if [[ -e "/dev/${d}" ]] && nvme smart-log "/dev/${d}" -o json > /dev/null 2>&1; then
+    if [[ -e "/dev/${d}" ]]; then
         DRIVES+=("${d}")
     else
-        bashio::log.info "Skipping ${d}: its SMART log is not readable"
+        bashio::log.warning "Skipping ${d}: the app has no access to /dev/${d} (it reads nvme0 to nvme3)"
     fi
 done
-(( ${#DRIVES[@]} > 0 )) || bashio::exit.nok 'No readable NVMe drive found'
+(( ${#DRIVES[@]} > 0 )) || fatal 'No NVMe drive found at /dev/nvme0 to /dev/nvme3'
 readonly DRIVES
 
 drive_node() { [[ "$1" == nvme0 ]] && echo "${NODE}" || echo "${NODE}_$1"; }
@@ -90,14 +109,18 @@ ORIGIN=$(jq -nc --arg app "${APP_NAME}" --arg version "${APP_VERSION:-unknown}" 
     '{name:$app, sw_version:$version, support_url:$url}')
 readonly CFG_URL ORIGIN
 
-drive_device() {
-    local model fw
-    model=$(tr -s ' ' < "${SYSFS}/$1/model" | sed 's/ *$//')
-    fw=$(tr -d ' ' < "${SYSFS}/$1/firmware_rev")
-    jq -nc --arg id "$(drive_node "$1")" --arg name "$(drive_name "$1")" \
+# The device of each drive for the discovery and the web page; model and
+# firmware do not change while the app runs, so they are read once
+declare -A DEVICE=()
+for d in "${DRIVES[@]}"; do
+    model=$(tr -s ' ' < "${SYSFS}/${d}/model" | sed 's/ *$//')
+    fw=$(tr -d ' ' < "${SYSFS}/${d}/firmware_rev")
+    DEVICE[${d}]=$(jq -nc --arg id "$(drive_node "${d}")" --arg name "$(drive_name "${d}")" \
         --arg model "${model}" --arg fw "${fw}" --arg cfg "${CFG_URL}" \
-        '{identifiers:[$id], name:$name, model:$model, sw_version:$fw, configuration_url:$cfg}'
-}
+        '{identifiers:[$id], name:$name, model:$model, sw_version:$fw, configuration_url:$cfg}')
+done
+unset model fw
+readonly DEVICE
 
 # --- Availability ---------------------------------------------------------------
 # A connection held open with a last will: if the app dies, the broker marks
@@ -106,12 +129,13 @@ HOLD_SUB=''
 hold_availability() {
     trap '[[ -n "${HOLD_SUB}" ]] && kill "${HOLD_SUB}" 2>/dev/null; exit 0' TERM
     while true; do
-        mosquitto_sub "${MQ[@]}" -i "${SLUG}-availability" -q 1 -t "${AVAIL}" \
+        mosquitto_sub -i "${SLUG}-availability" -q 1 -t "${AVAIL}" \
             --will-topic "${AVAIL}" --will-payload offline --will-retain --will-qos 1 \
             > /dev/null 2>&1 &
         HOLD_SUB=$!
         wait "${HOLD_SUB}"
-        sleep 10
+        # In the background, so the stop trap runs at once
+        sleep 10 & wait $!
     done
 }
 
@@ -126,27 +150,25 @@ stop() {
 
 # --- Discovery, once and retained ---------------------------------------------
 # One message per drive with all its entities; discover() adds one entity
-# $1 node  $2 device JSON (unused, the drive's message carries it)
-# $3 object_id  $4 display name  $5 platform  $6 extra JSON keys
+# $1 node  $2 object_id  $3 display name  $4 platform  $5 extra JSON keys
 COMPONENTS='{}'
 discover() {
-    COMPONENTS=$(jq -c --arg k "$3" --arg name "$4" --arg uid "$1_$3" --arg p "$5" \
-        --arg stt "$1/$3" --argjson exp "${EXPIRE}" --argjson extra "${6:-\{\}}" \
+    COMPONENTS=$(jq -c --arg k "$2" --arg name "$3" --arg uid "$1_$2" --arg p "$4" \
+        --arg stt "$1/$2" --argjson exp "${EXPIRE}" --argjson extra "${5:-\{\}}" \
         '.[$k] = ({platform:$p, name:$name, unique_id:$uid, default_entity_id:($p + "." + $uid),
                    state_topic:$stt, expire_after:$exp} + $extra)' <<< "${COMPONENTS}")
 }
 
 discover_drive() {
-    local n dev
+    local n
     n=$(drive_node "$1")
-    dev=$(drive_device "$1")
     COMPONENTS='{}'
     # The only entity: on for any sign that the drive needs attention. The
     # values themselves are on the web page
-    discover "${n}" "${dev}" health_problem 'Drive problem' binary_sensor \
+    discover "${n}" health_problem 'Drive problem' binary_sensor \
         "{\"device_class\":\"problem\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\",
           \"json_attributes_topic\":\"${n}/health_problem/attr\"}"
-    md_announce "${n}" "$(jq -nc --argjson c "${COMPONENTS}" --argjson dev "${dev}" \
+    md_announce "${n}" "$(jq -nc --argjson c "${COMPONENTS}" --argjson dev "${DEVICE[$1]}" \
         --argjson origin "${ORIGIN}" --arg avail "${AVAIL}" \
         '{device:$dev, origin:$origin, availability_topic:$avail, qos:1, components:$c}')" \
         "${PREFIX}/+/${n}/+/config"
@@ -154,7 +176,6 @@ discover_drive() {
 
 publish_discovery() {
     bashio::log.info 'Sending MQTT discovery...'
-    local d
     local d t
     for d in "${DRIVES[@]}"; do
         discover_drive "${d}"
@@ -243,25 +264,46 @@ log_throttling() {
     THROTTLING[${d}]=${kind}
 }
 
+# What the last successful reading of each drive found, kept for the web
+# page while the drive is not readable: the error log entries, the throttling
+# verdict, the reasons and the time of that reading
+declare -A LAST_ERRORS=() LAST_VERDICT=() LAST_REASONS=() READ_AT=()
+# Since when a drive is not readable (seconds since the epoch); unset = readable
+declare -A FAILING=()
+
 # Writes the status file of drive $1 for the web page: $2 the SMART log or
-# empty when it was not readable, $3 the throttling verdict, $4 the reasons
+# empty when it was not readable, $3 the throttling verdict, $4 the reasons.
+# Written every round, readable or not: "at" tells the page that the monitor
+# runs, "read_at" when the SMART log was last read.
 write_status() {
-    local d=$1 smart=${2:-null} errors='[]' file="${STATUS_DIR}/$1.json"
-    # The entries themselves only when the drive counted some
-    if [[ "${smart}" != null ]] && jq -e '(.num_err_log_entries // 0) > 0' <<< "${smart}" > /dev/null; then
-        errors=$(nvme error-log "/dev/${d}" -o json -e 16 2>/dev/null \
-            | jq -c '[.errors[]? | select(.error_count > 0)]' 2>/dev/null) || errors='[]'
-        [[ -n "${errors}" ]] || errors='[]'
+    local d=$1 smart=${2:-null} file="${STATUS_DIR}/$1.json" now failing=null
+    now=$(date +%s)
+    [[ "${smart}" != null ]] || failing=${FAILING[${d}]:-null}
+    if [[ "${smart}" != null ]]; then
+        LAST_VERDICT[${d}]=${3:-}
+        LAST_REASONS[${d}]=${4:-[]}
+        READ_AT[${d}]=${now}
+        LAST_ERRORS[${d}]='[]'
+        # The entries themselves only when the drive counted some
+        if jq -e '(.num_err_log_entries // 0) > 0' <<< "${smart}" > /dev/null; then
+            LAST_ERRORS[${d}]=$(nvme error-log "/dev/${d}" -o json -e 16 2>/dev/null \
+                | jq -c '[.errors[]? | select(.error_count > 0)]' 2>/dev/null) || LAST_ERRORS[${d}]='[]'
+            [[ -n "${LAST_ERRORS[${d}]}" ]] || LAST_ERRORS[${d}]='[]'
+        fi
     fi
-    jq -nc --arg drive "${d}" --arg name "$(drive_name "${d}")" --argjson device "$(drive_device "${d}")" \
-        --argjson at "$(date +%s)" --argjson smart "${smart}" --argjson prev "${PREV_SMART[${d}]:-null}" \
+    jq -nc --arg drive "${d}" --arg name "$(drive_name "${d}")" --argjson device "${DEVICE[${d}]}" \
+        --argjson at "${now}" --argjson read_at "${READ_AT[${d}]:-null}" \
+        --argjson failing "${failing}" \
+        --argjson smart "${smart}" --argjson prev "${PREV_SMART[${d}]:-null}" \
         --argjson thresholds "${THRESHOLDS[${d}]:-null}" --argjson capacity "${CAPACITY[${d}]:-null}" \
-        --arg verdict "${3:-}" --argjson reasons "${4:-[]}" --argjson errors "${errors}" \
-        --argjson margin "${HEAT_MARGIN}" '
-        {drive:$drive, name:$name, model:$device.model, firmware:$device.sw_version, capacity:$capacity, at:$at,
-         readable:($smart != null), smart:($smart // $prev), thresholds:$thresholds, heat_margin:$margin,
+        --arg verdict "${LAST_VERDICT[${d}]:-}" --argjson reasons "${LAST_REASONS[${d}]:-[]}" \
+        --argjson errors "${LAST_ERRORS[${d}]:-[]}" --argjson margin "${HEAT_MARGIN}" '
+        {drive:$drive, name:$name, model:$device.model, firmware:$device.sw_version, capacity:$capacity,
+         at:$at, read_at:$read_at, failing_since:$failing,
+         readable:($smart != null), smart:($smart // $prev // {}), thresholds:$thresholds, heat_margin:$margin,
          throttling:(if $verdict == "" then null
-                     else {kind:($verdict | split(" ")[0]), detail:($verdict | sub("^[a-z]+ "; ""))} end), reasons:$reasons, errors:$errors}' \
+                     else {kind:($verdict | split(" ")[0]), detail:($verdict | sub("^[a-z]+ "; ""))} end),
+         reasons:$reasons, errors:$errors}' \
         > "${file}.tmp" && mv "${file}.tmp" "${file}" \
         || bashio::log.warning "Cannot write the status of ${d} for the web page"
 }
@@ -271,6 +313,8 @@ read_smart() {
     local j t
     j=$(nvme smart-log "/dev/$1" -o json 2>/dev/null) || return 1
     t=$(drive_node "$1")
+    # A drive that was not readable at the start gets its thresholds now
+    [[ -n "${THRESHOLDS[$1]:-}" ]] || read_thresholds "$1" || true
     # Throttling when the counters grew since the previous reading and a
     # temperature explains it
     local verdict=''
@@ -296,7 +340,9 @@ read_smart() {
     write_status "$1" "${j}" "${verdict}" "${reasons}"
 }
 
-mkdir -p "${STATUS_DIR}"
+# Readable for the web page, which runs as its own user
+( umask 022; mkdir -p "${STATUS_DIR}" )
+umask 022
 hold_availability &
 HOLDER=$!
 trap stop EXIT TERM INT
@@ -304,12 +350,11 @@ trap stop EXIT TERM INT
 publish_discovery
 for d in "${DRIVES[@]}"; do
     read_thresholds "${d}" || bashio::log.warning "Temperature thresholds of ${d} not readable"
-    bashio::log.info "Monitoring ${d}: $(jq -r '.model + " (firmware " + .sw_version + ")"' <<< "$(drive_device "${d}")")"
+    bashio::log.info "Monitoring ${d}: $(jq -r '.model + " (firmware " + .sw_version + ")"' <<< "${DEVICE[${d}]}")"
 done
 bashio::log.info "Interval ${INTERVAL}s"
 
 # Warnings once per outage, not on every interval
-declare -A FAILING=()
 BROKER_AWAY=0
 while true; do
     STATES=()
@@ -318,12 +363,12 @@ while true; do
             [[ -n "${FAILING[${d}]:-}" ]] && bashio::log.info "Reading ${d} works again"
             unset 'FAILING[${d}]'
         else
-            # The page shows the last readable log and since when it fails
-            [[ -n "${FAILING[${d}]:-}" ]] || write_status "${d}" ''
             if [[ -z "${FAILING[${d}]:-}" ]]; then
                 bashio::log.warning "Reading ${d} failed, retrying every interval"
-                FAILING[${d}]=1
+                FAILING[${d}]=$(date +%s)
             fi
+            # The page shows the last readable log and since when it fails
+            write_status "${d}" ''
         fi
     done
     # Again on every round, in case the broker lost its retained messages

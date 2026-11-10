@@ -12,6 +12,7 @@ readonly DEVICE=homeassistant/device/nvme_monitor/config
 readonly AVAIL=nvme_monitor/availability
 WORK=$(mktemp -d)
 FAILED=0
+export NVME_MQTT_CONFIG="${WORK}/mqtt"
 export SMART_LOG=/tests/fixtures/smart-log.json NVME_SYSFS="${WORK}/sysfs" NVME_STATUS_DIR="${WORK}/status"
 mkdir -p "${NVME_SYSFS}/nvme0"
 printf 'Patriot M.2 P300 256GB\n' > "${NVME_SYSFS}/nvme0/model"
@@ -84,6 +85,9 @@ expect 'hand-over logged' "$(grep -c '2 entities of nvme_monitor moved to device
 expect 'old state removed' "$(retained nvme_monitor/temp_composite)" ''
 expect 'state retained' "$(retained nvme_monitor/health_problem)" OFF
 expect 'online' "$(retained "${AVAIL}")" online
+# The real clients found the broker through their configuration files
+held=$(for p in /proc/[0-9]*; do tr '\0' ' ' < "${p}/cmdline" 2>/dev/null; echo; done | grep '^mosquitto_sub .*-availability')
+expect 'held connection without the broker on its command line' "$(grep -c -- '-h \|-P ' <<< "${held}")|$(wc -l <<< "${held}")" '0|1'
 
 echo '# Regular stop'
 kill -TERM "${SERVICE}"

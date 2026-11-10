@@ -8,6 +8,7 @@ set -u
 readonly RUN=/etc/s6-overlay/s6-rc.d/monitor/run
 WORK=$(mktemp -d)
 export PUBLISHED="${WORK}/published" NVME_SYSFS="${WORK}/sysfs" NVME_STATUS_DIR="${WORK}/status" PATH="/tests/stubs:${PATH}" RETAINED="${WORK}/retained"
+export NVME_MQTT_CONFIG="${WORK}/mqtt"
 : > "${RETAINED}"
 FAILED=0
 
@@ -21,12 +22,15 @@ printf 'Basic NVMe 1TB\n' > "${NVME_SYSFS}/nvme1/model"
 touch /dev/nvme0 /dev/nvme1
 
 # Runs the service for two readings, or three with $2. Between the readings
-# the SMART log switches to $1 and then $2, so each one sees a change.
+# the SMART log switches to $1 and then $2, so each one sees a change. With
+# NVME1_SECOND the log of nvme1 (NVME1_LOG) switches to it after the first.
 run_monitor() {
     export SMART_LOG="${WORK}/smart-log.json" SECOND="$1" THIRD="${2:-}"
     cp /tests/fixtures/smart-log.json "${SMART_LOG}"
     : > "${PUBLISHED}"
     : > "${PUBLISHED}.sub"
+    : > "${PUBLISHED}.args"
+    rm -rf "${NVME_STATUS_DIR}"
     bash -c '
         source /usr/lib/bashio/bashio.sh
         bashio::config() {
@@ -49,7 +53,8 @@ run_monitor() {
         pause() {
             pauses=$((pauses + 1))
             case "${pauses}" in
-                1) cp "${SECOND}" "${SMART_LOG}" ;;
+                1) cp "${SECOND}" "${SMART_LOG}"
+                   [[ -z "${NVME1_SECOND:-}" ]] || cp "${NVME1_SECOND}" "${NVME1_LOG}" ;;
                 2) [[ -n "${THIRD}" ]] || exit 0; cp "${THIRD}" "${SMART_LOG}" ;;
                 *) exit 0 ;;
             esac
@@ -80,6 +85,15 @@ dev() { last "homeassistant/device/$1/config"; }
 
 echo '# Drive problem'
 run_monitor /tests/fixtures/smart-log.json
+
+echo '# Broker credentials'
+expect 'in the configuration files of the clients, for root only' \
+    "$(stat -c '%a' "${NVME_MQTT_CONFIG}" "${NVME_MQTT_CONFIG}/mosquitto_pub" "${NVME_MQTT_CONFIG}/mosquitto_sub" | tr '\n' ' ')" \
+    '700 600 600 '
+expect 'host, port, user and password' "$(tr '\n' '|' < "${NVME_MQTT_CONFIG}/mosquitto_sub")" \
+    '-h core-mosquitto|-p 1883|-u addons|-P secret|'
+expect 'pub and sub read the same' "$(cmp -s "${NVME_MQTT_CONFIG}/mosquitto_pub" "${NVME_MQTT_CONFIG}/mosquitto_sub" && echo same)" same
+expect 'no password on a command line' "$(cat "${PUBLISHED}.args" "${PUBLISHED}.sub" | grep -c -- 'secret\|-P ')" 0
 expect 'no drive problem' "$(last nvme_monitor/health_problem)|$(last nvme_monitor/health_problem/attr)" 'OFF|{"reasons":[]}'
 expect 'no other state published' \
     "$(awk -F '\t' '$1 ~ /^nvme_monitor(_nvme[0-9])?\// && $1 !~ /health_problem|availability/ && $2 != ""' "${PUBLISHED}" | wc -l | tr -d ' ')" 0
@@ -100,7 +114,7 @@ expect 'unset throttling stages are left out' "$(status nvme1 .thresholds)" '{"w
 expect 'its own device' \
     "$(dev nvme_monitor_nvme1 | jq -r '.components.health_problem.unique_id + " " + .device.name + " " + .device.model')" \
     'nvme_monitor_nvme1_health_problem Host NVMe 1 Basic NVMe 1TB'
-expect 'unreadable drive skipped' "$(grep -c 'Skipping nvme2' "${WORK}/log")|$(find "${NVME_STATUS_DIR}" -name 'nvme2*' | wc -l | tr -d ' ')" '1|0'
+expect 'drive without a device node skipped' "$(grep -c 'WARNING.*Skipping nvme2' "${WORK}/log")|$(find "${NVME_STATUS_DIR}" -name 'nvme2*' | wc -l | tr -d ' ')" '1|0'
 
 echo '# Values moved to the web page'
 expect 'old states removed' "$(grep -c '^nvme_monitor/temp_composite	$' "${PUBLISHED}")|$(grep -c '^nvme_monitor_nvme1/throttle_active/attr	$' "${PUBLISHED}")" '1|1'
@@ -184,7 +198,7 @@ run_monitor "$(variant counter1 '.thm_temp1_trans_count += 30 | .thm_temp1_total
     "$(variant counter2 '.thm_temp1_trans_count += 60 | .thm_temp1_total_time += 3')"
 expect 'no drive problem at 41 °C' "$(grep '^nvme_monitor/health_problem	' "${PUBLISHED}" | cut -f2 | sort -u)" OFF
 expect 'status file names the counters' "$(status nvme0 .throttling)" '{"kind":"counter","detail":"41"}'
-expect 'no warning' "$(grep -c 'WARNING' "${WORK}/log")" 0
+expect 'no warning' "$(grep 'WARNING' "${WORK}/log" | grep -vc 'Skipping nvme2')" 0
 expect 'one line for the whole episode' \
     "$(grep -c 'Throttling counters of nvme0 grow at 41 °C, more than 10 °C below its lowest threshold of 70 °C: not reported as throttling' "${WORK}/log")" 1
 
@@ -207,9 +221,27 @@ expect 'one warning, one end' "$(grep -c 'Thermal throttling on nvme0:' "${WORK}
 
 echo '# Unreadable drive'
 : > "${WORK}/empty.json"
-run_monitor "${WORK}/empty.json"
-expect 'status file keeps the last log' "$(status nvme0 '[.readable, .smart.temperature]')" '[false,314]'
+run_monitor "$(variant errors '.num_err_log_entries = 3')" "${WORK}/empty.json"
+expect 'status file keeps the last log' "$(status nvme0 '[.readable, .smart.temperature, .smart.num_err_log_entries]')" '[false,314,3]'
+expect 'and the error log entries of the last reading' "$(status nvme0 '.errors | length')" 2
+expect 'since when it fails, when it was read last, that the monitor runs' \
+    "$(status nvme0 '[.failing_since, .read_at, .at] | map(type)')" '["number","number","number"]'
 expect 'one warning' "$(grep -c 'Reading nvme0 failed, retrying every interval' "${WORK}/log")" 1
+expect 'no state while unreadable: the sensor expires' "$(grep -c '^nvme_monitor/health_problem	' "${PUBLISHED}")" 2
+
+echo '# Drive not readable at the start'
+NVME1_LOG="${WORK}/nvme1.json" NVME1_SECOND=/tests/fixtures/smart-log-basic.json
+export NVME1_LOG NVME1_SECOND
+: > "${NVME1_LOG}"
+run_monitor /tests/fixtures/smart-log.json
+expect 'monitored all the same, with its device' "$(dev nvme_monitor_nvme1 | jq -c '.components | keys')" '["health_problem"]'
+expect 'warned once' "$(grep -c 'Reading nvme1 failed, retrying every interval' "${WORK}/log")" 1
+expect 'read once it answers' "$(grep -c 'Reading nvme1 works again' "${WORK}/log")|$(last nvme_monitor_nvme1/health_problem)" '1|OFF'
+expect 'thresholds read then' "$(status nvme1 '[.readable, .failing_since, .thresholds.warning_temp_c]')" '[true,null,70]'
+: > "${NVME1_LOG}"
+NVME1_SECOND="${WORK}/empty.json" run_monitor /tests/fixtures/smart-log.json
+expect 'a drive never read has an empty log on the page' "$(status nvme1 '[.readable, .smart, .read_at]')" '[false,{},null]'
+unset NVME1_LOG NVME1_SECOND
 
 echo '# Broker away'
 rm -f "${PUBLISHED}.calls"

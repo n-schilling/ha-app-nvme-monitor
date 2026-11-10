@@ -5,11 +5,13 @@ monitor service writes them.
 """
 
 import json
+import os
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -124,6 +126,24 @@ class History(Fixture):
         self.path.write_text("[]")
         self.assertEqual(w.History(self.path).data, {})
 
+    def test_entries_in_the_wrong_form_are_left_out(self) -> None:
+        day = w.local_day(NOW)
+        self.path.write_text(json.dumps({"drives": {
+            "nvme0": {"hours": {"7200": [40, 44], "x": [1, 2], "3600": [1], "10800": ["a", 2]},
+                      "days": {day: {"media_errors": 1, "bogus": 2, "unsafe_shutdowns": "3"}, "never": {}, "2026-01-02": 5}},
+            "nvme1": {"hours": []},
+            "nvme2": "broken",
+        }}))
+        with self.assertLogs(w.LOGGER, "WARNING") as logs:
+            h = w.History(self.path)
+        self.assertEqual(h.data, {"nvme0": {"hours": {"7200": [40, 44]}, "days": {day: {"media_errors": 1}}}})
+        self.assertIn("Left out 7 entries", logs.output[0])
+        # And it grows from there
+        h.add("nvme0", status())
+        h.add("nvme1", status("nvme1"))
+        self.assertEqual(sorted(h.data), ["nvme0", "nvme1"])
+        self.assertEqual(h.data["nvme0"]["days"][day]["unsafe_shutdowns"], 61)
+
     def test_saved_at_most_every_five_minutes(self) -> None:
         h = w.History(self.path)
         h.add("nvme0", status())
@@ -196,8 +216,37 @@ class Page(Fixture):
         self.assertIn("höchstens 10 °C unter", page)
 
     def test_unreadable_drive(self) -> None:
-        self.write(status(readable=False))
-        self.assertIn("SMART log not readable since", self.page(self.state()))
+        errors = [{"error_count": 2, "sqid": 1, "cmdid": 12, "status_field": 8194, "lba": 4096, "nsid": 1}]
+        self.write(status(readable=False, failing_since=NOW - 3600, errors=errors,
+                          throttling={"kind": "counter", "detail": "41"}))
+        page = self.page(self.state())
+        self.assertIn("SMART log not readable since " + w.Format("en").when(NOW - 3600), page)
+        # What the last reading found stays on the page
+        self.assertIn("<h2>Error log</h2>", page)
+        self.assertIn("Counters grow at 41 °C without heat", page)
+        self.assertNotIn("the monitor does not run", page)
+
+    def test_unreadable_drive_and_monitor_stopped(self) -> None:
+        self.write(status(readable=False, at=NOW - 600, failing_since=NOW - 3600))
+        page = self.page(self.state())
+        self.assertIn("SMART log not readable since", page)
+        self.assertIn("No reading for 10 min: the monitor does not run", page)
+
+    def test_drive_never_read(self) -> None:
+        self.write(status(readable=False, smart={}, failing_since=NOW - 120, read_at=None))
+        page = self.page(self.state())
+        self.assertIn("SMART log not readable since", page)
+        # Nothing is known: no verdict on its health and no values
+        self.assertNotIn("The drive is healthy", page)
+        self.assertNotIn("<h2>Health</h2>", page)
+
+    def test_version_at_the_bottom(self) -> None:
+        self.write(status())
+        with unittest.mock.patch.dict(os.environ, {"APP_VERSION": "9.8.7"}):
+            page = self.page(self.state())
+        self.assertIn('<footer class="version">NVMe Monitor 9.8.7</footer></body>', page)
+        with unittest.mock.patch.dict(os.environ, {"APP_VERSION": ""}):
+            self.assertIn('<footer class="version">NVMe Monitor</footer>', self.page(self.state()))
 
     def test_monitor_stopped(self) -> None:
         self.write(status(at=NOW - 600))
@@ -280,6 +329,29 @@ class Charts(Fixture):
         page = self.page(self.history(10))
         self.assertIn("No counter of trouble grew since the history began.", page)
 
+    def test_gap_in_the_readings(self) -> None:
+        # Readings on days 0 to 4 and 10 to 14: 12 GB written while the app was off
+        self.write(status())
+        state = self.state()
+        for i in [*range(5), *range(10, 15)]:
+            written = 6_000_000 + i * 2000 + (11718 if i >= 10 else 0)
+            state.history.add("nvme0", status(at=NOW - (14 - i) * DAY,
+                                              smart=smart(data_units_written=written, unsafe_shutdowns=61 + (i >= 10))))
+        page = self.page(state)
+        f = w.Format("en")
+        first, last = w.local_day(NOW - 9 * DAY), w.local_day(NOW - 4 * DAY)
+        # Spread over the six days of the gap, lighter, with the whole amount in the tooltip
+        self.assertEqual(page.count('class="bar gap"'), 6)
+        self.assertEqual(page.count('class="bar"'), 8)
+        self.assertIn(f"{first} – {last} · 12.1 GB in 6 days, not read in between</title>", page)
+        self.assertIn("Lighter bars: days without a reading", page)
+        # A counter that grew in the gap: the whole gap, not the day after it
+        self.assertIn(f"{f.day(first)} – {f.day(last)}</td><td>Unsafe shutdowns: 61 → 62", page)
+
+    def test_no_gap_no_note(self) -> None:
+        self.write(status())
+        self.assertNotIn("Lighter bars", self.page(self.history(5)))
+
     def test_ticks_are_round(self) -> None:
         self.assertEqual(w.ticks(38, 49), [38, 40, 42, 44, 46, 48])
         self.assertEqual(w.ticks(0, 1.3e9), [0, 5e8, 1e9])
@@ -332,6 +404,21 @@ class Server(Fixture):
         self.assertIn("Das Laufwerk ist in Ordnung", page)
         self.assertEqual(self.get(base + "/other")[0], 404)
         self.assertEqual(self.get(base + "/../../data/options.json")[0], 404)
+
+    def test_security_headers(self) -> None:
+        with urllib.request.urlopen(self.serve(set()) + "/") as answer:
+            headers = answer.headers
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        csp = headers["Content-Security-Policy"]
+        for part in ("default-src 'none'", "connect-src 'self'", "frame-ancestors 'self'"):
+            self.assertIn(part, csp)
+        self.assertNotIn("X-Frame-Options", headers)
+
+    def test_interval_from_the_environment(self) -> None:
+        with unittest.mock.patch.dict(os.environ, {"NVME_INTERVAL": "300"}):
+            self.assertEqual(w.interval(), 300)
+        with unittest.mock.patch.dict(os.environ, {"NVME_INTERVAL": "x"}):
+            self.assertEqual(w.interval(), 60)
 
     def test_read_only(self) -> None:
         base = self.serve(set())

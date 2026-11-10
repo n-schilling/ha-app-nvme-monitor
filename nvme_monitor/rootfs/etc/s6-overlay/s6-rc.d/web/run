@@ -1,7 +1,23 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# The web page behind Home Assistant's ingress
+# The web page behind Home Assistant's ingress. It runs as its own user, so
+# it has neither root nor the SYS_ADMIN capability the monitor needs to read
+# the drives: a flaw in the web server cannot reach the drives through it.
 # ==============================================================================
+readonly USER_NAME=nvmeweb
+readonly DIR=/data/web
+
+# The history belongs to the page's user; 3.0.0 kept it in /data itself
+install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 700 "${DIR}"
+if [[ -f /data/history.json && ! -e "${DIR}/history.json" ]]; then
+    mv /data/history.json "${DIR}/history.json"
+fi
+find "${DIR}" -xdev ! -user "${USER_NAME}" -exec chown -h "${USER_NAME}:${USER_NAME}" {} +
+
+# The options file is root's; the page only needs the interval
+NVME_INTERVAL=$(bashio::config 'interval')
+export NVME_INTERVAL
+
 bashio::log.info 'Starting the web page'
-exec python3 /usr/local/lib/nvme_web.py
+exec s6-setuidgid "${USER_NAME}" python3 /usr/local/lib/nvme_web.py

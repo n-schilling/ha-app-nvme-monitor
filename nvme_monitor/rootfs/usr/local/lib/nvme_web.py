@@ -5,7 +5,7 @@ and how it changed.
 The monitor service reads the drives and writes one status file per drive to
 STATUS_DIR with every reading; Home Assistant only gets the Drive problem
 sensor. A drive keeps its counters itself, but no history, so the page keeps
-one in /data: the lowest and highest temperature of every hour for HOURS_KEPT
+one in HISTORY: the lowest and highest temperature of every hour for HOURS_KEPT
 hours, and the counters as they stood at the end of every day for DAYS_KEPT
 days. From those it draws the temperature, the data written per day and the
 days on which a counter of trouble grew.
@@ -15,6 +15,10 @@ library. Its only script takes Home Assistant's theme from the page around
 the ingress frame and swaps in a fresh copy of the page every REFRESH seconds
 or when the refresh button is pressed. It changes nothing: the server answers
 GET only.
+
+The server runs as its own user without root and without capabilities, so it
+cannot reach the drives; it reads the status files and writes its history
+only. The app's interval and version come in through the environment.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import socketserver
 import sys
 import threading
 import time
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -38,8 +43,8 @@ PORT = 8099              # the Supervisor's default ingress port
 # The Supervisor's ingress proxy; nothing else may talk to the page
 INGRESS_PEER = "172.30.32.2"
 STATUS_DIR = Path("/run/nvme-monitor")  # written by the monitor service
-HISTORY = Path("/data/history.json")
-OPTIONS = Path("/data/options.json")
+HISTORY = Path("/data/web/history.json")  # a folder of the page's own user
+APP_NAME = "NVMe Monitor"
 POLL = 15                # seconds between two reads of the status files
 REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the history per 5 minutes
@@ -94,6 +99,9 @@ TEXT = {
         "no_changes": "No counter of trouble grew since the history began.",
         "history_empty": "The history begins with the first reading and grows from there.",
         "history_since": "History since {}.", "day": "Day", "change": "Change",
+        "gap": "{} – {} · {} in {} days, not read in between",
+        "gap_note": "Lighter bars: days without a reading; what was written over them is spread evenly.",
+        "never_read": "SMART log not readable since {}",
         "errors": "Error log", "error_count": "Error", "queue": "Queue", "command": "Command",
         "status_field": "Status", "lba": "LBA", "namespace": "Namespace",
         "unknown": "–", "ago": "{} ago", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
@@ -137,6 +145,9 @@ TEXT = {
         "no_changes": "Seit Beginn des Verlaufs ist kein Störungszähler gestiegen.",
         "history_empty": "Der Verlauf beginnt mit der ersten Abfrage und wächst ab dann.",
         "history_since": "Verlauf seit {}.", "day": "Tag", "change": "Änderung",
+        "gap": "{} – {} · {} in {} Tagen, dazwischen nicht gelesen",
+        "gap_note": "Hellere Balken: Tage ohne Abfrage; was in der Zeit geschrieben wurde, ist gleichmäßig verteilt.",
+        "never_read": "SMART-Log seit {} nicht lesbar",
         "errors": "Fehlerprotokoll", "error_count": "Fehler", "queue": "Queue", "command": "Befehl",
         "status_field": "Status", "lba": "LBA", "namespace": "Namespace",
         "unknown": "–", "ago": "vor {}", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
@@ -220,8 +231,11 @@ svg.chart .grid { stroke: var(--divider-color); stroke-width: 1; }
 svg.chart .axis { fill: var(--secondary-text-color); font-size: 11px; }
 svg.chart .band { fill: var(--primary-color); fill-opacity: .25; }
 svg.chart .bar { fill: var(--primary-color); }
+svg.chart .bar.gap { fill-opacity: .4; }
 svg.chart .hit { fill: transparent; }
 svg.chart .hit:hover { fill: color-mix(in srgb, var(--primary-text-color) 8%, transparent); }
+.version { margin-top: 8px; padding: 0 16px 24px; text-align: center; color: var(--secondary-text-color);
+  font-size: 12px; }
 @media (max-width: 600px) { .opt { display: none; } }
 """
 # Takes Home Assistant's theme from the page around the ingress frame (same
@@ -298,6 +312,31 @@ def local_day(epoch: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(epoch))
 
 
+def is_day(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    return len(value) == 10
+
+
+def valid_entry(entry) -> tuple[dict | None, int]:
+    """The parts of a stored history entry that have the expected form, and
+    how many parts were left out. A file cut short or edited by hand must not
+    stop the history from growing."""
+    if not (isinstance(entry, dict) and isinstance(entry.get("hours"), dict) and isinstance(entry.get("days"), dict)):
+        return None, 1
+    hours = {hour: [low, high] for hour, value in entry["hours"].items()
+             if isinstance(hour, str) and hour.isdigit() and isinstance(value, list) and len(value) == 2
+             for low, high in [value]
+             if all(isinstance(x, int | float) and not isinstance(x, bool) for x in (low, high))}
+    days = {day: {key: n for key, n in value.items()
+                  if key in DAY_KEYS and isinstance(n, int) and not isinstance(n, bool)}
+            for day, value in entry["days"].items() if is_day(day) and isinstance(value, dict)}
+    lost = len(entry["hours"]) - len(hours) + len(entry["days"]) - len(days)
+    return {"hours": hours, "days": days}, lost
+
+
 class History:
     """Per drive: the lowest and highest temperature of every hour, and the
     counters as they stood at the end of every day."""
@@ -308,10 +347,18 @@ class History:
         self._saved = 0.0
         try:
             stored = json.loads(path.read_text())
-            if isinstance(stored.get("drives"), dict):
-                self.data = stored["drives"]
-        except (OSError, ValueError, AttributeError):
-            pass
+        except (OSError, ValueError):
+            return
+        drives = stored.get("drives") if isinstance(stored, dict) else None
+        dropped = 0
+        for drive, entry in (drives.items() if isinstance(drives, dict) else ()):
+            clean, lost = valid_entry(entry)
+            dropped += lost
+            if clean is not None:
+                self.data[drive] = clean
+        if dropped or not isinstance(drives, dict):
+            LOGGER.warning("Left out %s of the history in %s: not in the expected form",
+                           f"{dropped} entries" if isinstance(drives, dict) else "everything", path)
 
     def add(self, drive: str, status: dict) -> None:
         """Takes one reading; readings of an unreadable drive are left out."""
@@ -362,11 +409,17 @@ def problems(status: dict) -> list[tuple[str, tuple]]:
 
 
 def interval() -> int:
-    """Seconds between two readings, from the app's options."""
+    """Seconds between two readings, from the app's options (web/run passes
+    the option on, since the page's user cannot read the options file)."""
     try:
-        return max(int(json.loads(OPTIONS.read_text())["interval"]), 1)
-    except (OSError, ValueError, KeyError, TypeError):
+        return max(int(os.environ.get("NVME_INTERVAL", "")), 1)
+    except ValueError:
         return 60
+
+
+def version() -> str:
+    """The app's version, as the Supervisor built the image with it."""
+    return os.environ.get("APP_VERSION", "").strip()
 
 
 class State:
@@ -497,11 +550,17 @@ def status_card(f: Format, status: dict, now: float, every: int) -> str:
         texts = [t["reasons"][key].format(*(warning_bits(f, v[0]),) if key == "warning" else v) for key, v in found]
         state = (f'<div class="state bad">{icon("alert")}{esc(t["problem"])}</div>'
                  f'<ul class="reasons">{"".join(f"<li>{esc(x)}</li>" for x in texts)}</ul>')
-    else:
+    elif status["smart"]:
         state = f'<div class="state ok">{icon("ok")}{esc(t["healthy"])}</div>'
+    else:
+        # Never read: nothing is known about its health
+        state = ""
     if not status.get("readable"):
-        state += f'<div class="state bad">{icon("alert")}{esc(t["unreadable"].format(f.when(status["at"])))}</div>'
-    elif now - status["at"] > 3 * every:
+        since = f.when(status.get("failing_since") or status["at"])
+        text = t["unreadable" if status["smart"] else "never_read"].format(since)
+        state += f'<div class="state bad">{icon("alert")}{esc(text)}</div>'
+    # Apart from the above: the monitor writes the file every round, readable or not
+    if now - status["at"] > 3 * every:
         state += f'<div class="state bad">{icon("alert")}{esc(t["stale"].format(f.duration(now - status["at"])))}</div>'
     s = status["smart"]
     rows = [(t["model"], esc(status.get("model") or t["unknown"])),
@@ -657,40 +716,63 @@ def temperature_chart(f: Format, hours: dict[str, list[int]], now: float) -> str
     return f'<h3>{esc(f.t["temp_chart"].format(days))}</h3>{chart}'
 
 
+def spans(order: list[str]) -> list[tuple[str, str, str]]:
+    """Each pair of days with a reading as (first day, last day, day before):
+    the days the change between the two readings belongs to. Without a gap
+    first and last are the same day; after a gap (the app stopped, the host
+    was off) the change belongs to all the days of the gap, not to the first
+    day after it."""
+    return [((date.fromisoformat(before) + timedelta(days=1)).isoformat(), day, before)
+            for before, day in itertools.pairwise(order)]
+
+
 def written_chart(f: Format, days: dict[str, dict]) -> str:
     order = sorted(day for day in days if "data_units_written" in days[day])
-    per_day = []
-    for before, day in itertools.pairwise(order):
-        grown = days[day]["data_units_written"] - days[before]["data_units_written"]
-        per_day.append((day, max(grown, 0) * UNIT))
-    per_day = per_day[-WRITTEN_DAYS:]
-    if not per_day:
+    if len(order) < 2:
+        return ""
+    end = date.fromisoformat(order[-1])
+    start = end - timedelta(days=WRITTEN_DAYS - 1)
+    # Per calendar day of the chart: bytes written, and the gap it belongs to
+    slots: dict[int, tuple[float, tuple[str, str, float, int] | None]] = {}
+    for first, last, before in spans(order):
+        grown = max(days[last]["data_units_written"] - days[before]["data_units_written"], 0) * UNIT
+        length = (date.fromisoformat(last) - date.fromisoformat(first)).days + 1
+        for i in range(length):
+            index = (date.fromisoformat(first) + timedelta(days=i) - start).days
+            if 0 <= index < WRITTEN_DAYS:
+                slots[index] = (grown / length, (first, last, grown, length) if length > 1 else None)
+    if not slots:
         return ""
     plot_w, plot_h = CHART_W - PAD_L - PAD_R, CHART_H - PAD_T - PAD_B
     slot = plot_w / WRITTEN_DAYS
     width = min(slot - 2, 24)
-    high = max(v for _, v in per_day) or 1
+    high = max(v for v, _ in slots.values()) or 1
     y_ticks = ticks(0, high)
     top = max(y_ticks[-1], high)
 
     def y_of(value: float) -> float:
         return PAD_T + (top - value) / top * plot_h
 
-    offset = WRITTEN_DAYS - len(per_day)
     bars, labels = [], []
-    for i, (day, value) in enumerate(per_day):
-        x = PAD_L + (offset + i) * slot + (slot - width) / 2
+    for index in range(WRITTEN_DAYS):
+        day = (start + timedelta(days=index)).isoformat()
+        x = PAD_L + index * slot + (slot - width) / 2
+        if index % 14 == 0:
+            labels.append((x + width / 2, f.short_day(day)))
+        if index not in slots:
+            continue
+        value, gap = slots[index]
         y, base = y_of(value), PAD_T + plot_h
         r = min(4, width / 2, base - y)
         # Rounded at the data end, square at the baseline
         d = (f"M{x:.1f},{base:.1f} V{y + r:.1f} Q{x:.1f},{y:.1f} {x + r:.1f},{y:.1f} H{x + width - r:.1f} "
              f"Q{x + width:.1f},{y:.1f} {x + width:.1f},{y + r:.1f} V{base:.1f}Z")
         if value > 0:
-            bars.append(f'<path class="bar" d="{d}"/>')
-        bars.append(f'<rect class="hit" x="{PAD_L + (offset + i) * slot:.1f}" y="{PAD_T}" width="{slot:.2f}" '
-                    f'height="{plot_h}"><title>{esc(f.day(day))} · {esc(f.size(value))}</title></rect>')
-        if (offset + i) % 14 == 0:
-            labels.append((x + width / 2, f.short_day(day)))
+            bars.append(f'<path class="bar{" gap" if gap else ""}" d="{d}"/>')
+        title = (f.t["gap"].format(f.day(gap[0]), f.day(gap[1]), f.size(gap[2]), gap[3]) if gap
+                 else f"{f.day(day)} · {f.size(value)}")
+        bars.append(f'<rect class="hit" x="{PAD_L + index * slot:.1f}" y="{PAD_T}" width="{slot:.2f}" '
+                    f'height="{plot_h}"><title>{esc(title)}</title></rect>')
     # One unit for the whole axis, decimals only where a tick needs them
     unit, factor = next(((u, x) for u, x in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6)) if top >= x), ("kB", 1e3))
     digits = 0 if all(float(v / factor).is_integer() for v in y_ticks) else 1
@@ -700,18 +782,20 @@ def written_chart(f: Format, days: dict[str, dict]) -> str:
 
     chart = svg_chart(f, "".join(bars), y_ticks, y_of, axis, labels,
                       f.t["written_chart"].format(WRITTEN_DAYS))
-    return f'<h3>{esc(f.t["written_chart"].format(WRITTEN_DAYS))}</h3>{chart}'
+    note = (f'<div class="note">{esc(f.t["gap_note"])}</div>'
+            if any(gap for _, gap in slots.values()) else "")
+    return f'<h3>{esc(f.t["written_chart"].format(WRITTEN_DAYS))}</h3>{chart}{note}'
 
 
-def changes(days: dict[str, dict]) -> list[tuple[str, list[tuple[str, int, int]]]]:
-    """Days on which a counter of trouble grew, newest first."""
-    order = sorted(days)
+def changes(days: dict[str, dict]) -> list[tuple[str, str, list[tuple[str, int, int]]]]:
+    """Days on which a counter of trouble grew, newest first, as first and
+    last day: after a gap in the readings the counter grew somewhen in it."""
     found = []
-    for before, day in itertools.pairwise(order):
+    for first, day, before in spans(sorted(days)):
         grown = [(key, days[before][key], days[day][key]) for key in TROUBLE
                  if key in days[day] and key in days[before] and days[day][key] > days[before][key]]
         if grown:
-            found.append((day, grown))
+            found.append((first, day, grown))
     return found[::-1]
 
 
@@ -723,9 +807,9 @@ def history_card(f: Format, entry: dict | None, now: float) -> str:
     labels = {"media_errors": t["media_errors"], "num_err_log_entries": t["error_log"],
               "unsafe_shutdowns": t["unsafe"], "percent_used": t["wear"]}
     rows = "".join(
-        f'<tr><td class="nowrap">{esc(f.day(day))}</td><td>'
+        f'<tr><td class="nowrap">{esc(f.day(day) if first == day else f"{f.day(first)} – {f.day(day)}")}</td><td>'
         + "<br>".join(esc(f"{labels[key]}: {f.int(old)} → {f.int(new)}") for key, old, new in grown) + "</td></tr>"
-        for day, grown in changes(days)[:CHANGES_SHOWN])
+        for first, day, grown in changes(days)[:CHANGES_SHOWN])
     table = (f'<h3>{esc(t["changes"])}</h3><table class="list"><thead><tr><th>{esc(t["day"])}</th>'
              f'<th>{esc(t["change"])}</th></tr></thead><tbody>{rows}</tbody></table>' if rows
              else f'<h3>{esc(t["changes"])}</h3><p class="muted">{esc(t["no_changes"])}</p>')
@@ -751,6 +835,9 @@ def errors_card(f: Format, status: dict) -> str:
 
 def drive_section(f: Format, status: dict, entry: dict | None, now: float, every: int, titled: bool) -> str:
     head = f"<h2>{esc(status.get('name') or status.get('drive'))}</h2>" if titled else ""
+    if not status["smart"]:
+        # Never read since the app started: no values to show
+        return f'<section>{head}<div class="cards"><div>{status_card(f, status, now, every)}</div></div></section>'
     return (f"<section>{head}<div class=\"cards\"><div>{status_card(f, status, now, every)}{throttling_card(f, status)}</div>"
             f"<div>{health_card(f, status)}{temperature_card(f, status)}</div></div>"
             f"{history_card(f, entry, now)}{errors_card(f, status)}</section>")
@@ -779,7 +866,8 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(t['title'])}</title><style>{STYLE}</style><script>{SCRIPT}</script></head><body>"
             f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
-            f"<main>{body}</main></body></html>")
+            f'<main>{body}</main><footer class="version">{esc(f"{APP_NAME} {version()}".strip())}</footer>'
+            "</body></html>")
 
 
 # --- The server ------------------------------------------------------------------------------
@@ -790,6 +878,18 @@ class Server(ThreadingHTTPServer):
         # HTTPServer looks up its own name here, which can wait for DNS
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = "nvme-web", self.server_address[1]
+
+
+# The page is rendered on the server and loads nothing: its own inline style
+# and script, the fetch of its fresh copy, and Home Assistant's frame around it
+HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                               "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
+                               "frame-ancestors 'self'",
+}
 
 
 def handler(state: State, slug: str | None, allowed: set[str]):
@@ -809,7 +909,8 @@ def handler(state: State, slug: str | None, allowed: set[str]):
             self.send_response(code)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            for name, value in HEADERS.items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 

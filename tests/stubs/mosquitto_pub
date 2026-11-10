@@ -1,8 +1,10 @@
 #!/bin/bash
-# Stub for mosquitto_pub -r -t <topic> -s|-n: records "topic<TAB>payload".
+# Stub for mosquitto_pub -r -t <topic> -s|-n: records "topic<TAB>payload"
+# and its arguments.
 # Like the real one it refuses an empty message on stdin. With PUB_FAIL=n the
 # first n states (not discovery, not removals) fail as if the broker were away.
 topic='' null=0
+printf '%s\n' "$*" >> "${PUBLISHED}.args"
 while (( $# )); do
     [[ "$1" == -t ]] && topic=$2
     [[ "$1" == -n ]] && null=1

@@ -3,17 +3,18 @@
 # Device based MQTT discovery: one retained message per device announces all
 # its entities (components). Takes over entities that versions before
 # announced one by one, and removes components that are gone.
-# Needs MQ (mosquitto options) and DISCOVERY_PREFIX.
+# Needs DISCOVERY_PREFIX; the broker comes from the mosquitto clients'
+# configuration files (XDG_CONFIG_HOME).
 # ==============================================================================
 
-md_pub()   { mosquitto_pub "${MQ[@]}" -r -q 1 -t "$1" -s; }
-md_clear() { mosquitto_pub "${MQ[@]}" -r -q 1 -t "$1" -n; }
+md_pub()   { mosquitto_pub -r -q 1 -t "$1" -s; }
+md_clear() { mosquitto_pub -r -q 1 -t "$1" -n; }
 
 # Retained messages on a topic filter as "topic<TAB>payload"; waits $2 s.
 # A payload may end in a newline (older versions published jq's output as it
 # was), so only lines with a topic and a tab count.
 md_retained() {
-    { mosquitto_sub "${MQ[@]}" -t "$1" --retained-only -W "${2:-2}" -F '%t	%p' 2>/dev/null || true; } \
+    { mosquitto_sub -t "$1" --retained-only -W "${2:-2}" -F '%t	%p' 2>/dev/null || true; } \
         | awk -F '\t' 'NF >= 2 && $1 != ""'
 }
 
