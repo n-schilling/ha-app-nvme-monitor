@@ -23,6 +23,7 @@ only. The app's interval and version come in through the environment.
 
 from __future__ import annotations
 
+import functools
 import html
 import itertools
 import json
@@ -45,6 +46,9 @@ INGRESS_PEER = "172.30.32.2"
 STATUS_DIR = Path("/run/nvme-monitor")  # written by the monitor service
 HISTORY = Path("/data/web/history.json")  # a folder of the page's own user
 APP_NAME = "NVMe Monitor"
+# The look all the apps' pages share: /usr/local/share/ha-app/ha.css in the
+# image, the same place in the repository for the tests
+STYLESHEET = Path(__file__).resolve().parents[1] / "share/ha-app/ha.css"
 POLL = 15                # seconds between two reads of the status files
 REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the history per 5 minutes
@@ -167,64 +171,20 @@ def icon(name: str, cls: str = "") -> str:
     return f'<svg class="{cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="{ICONS[name]}"/></svg>'
 
 
-# Home Assistant's defaults; the script replaces them with the theme in use
-STYLE = """
-:root { color-scheme: light dark; --primary-background-color: #fafafa; --secondary-background-color: #e5e5e5;
-  --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272;
-  --divider-color: rgba(0,0,0,.12); --primary-color: #03a9f4; --success-color: #4caf50;
-  --warning-color: #ff9800; --error-color: #db4437; --disabled-text-color: #bdbdbd;
-  --sidebar-background-color: #fff; --sidebar-text-color: #212121; --sidebar-icon-color: rgba(0,0,0,.5);
-  --app-header-border-bottom: 1px solid var(--divider-color); --ha-card-border-radius: 12px;
-  --ha-card-border-width: 1px; --ha-card-border-color: var(--divider-color); --ha-card-box-shadow: none;
-  --ha-font-family-body: Roboto, Noto, sans-serif; --header-height: 56px; }
-@media (prefers-color-scheme: dark) { :root { --primary-background-color: #111; --secondary-background-color: #282828;
-  --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b;
-  --divider-color: rgba(225,225,225,.12); --disabled-text-color: #6f6f6f; --sidebar-background-color: #1c1c1c;
-  --sidebar-text-color: #e1e1e1; --sidebar-icon-color: rgba(255,255,255,.5); } }
-* { box-sizing: border-box; }
-html, body { margin: 0; background: var(--primary-background-color); color: var(--primary-text-color);
-  font: 14px/1.6 var(--ha-font-family-body); -webkit-font-smoothing: antialiased; }
-svg { width: 24px; height: 24px; fill: currentColor; flex: none; }
-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; height: var(--header-height);
-  padding: 0 12px; background: var(--sidebar-background-color); color: var(--sidebar-text-color);
-  border-bottom: var(--app-header-border-bottom); }
-header h1 { margin: 0 0 0 12px; font-size: 20px; font-weight: 400; line-height: 32px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; }
-header .actions { margin-left: auto; display: flex; align-items: center; }
-header .stamp { margin-right: 8px; font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; }
-#refresh.busy svg { animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-header .actions a { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px;
-  border-radius: 50%; color: var(--sidebar-icon-color); }
-header .actions a:hover { background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
-main { margin: 0 auto; padding: 16px; max-width: 1040px; }
-section > h2 { margin: 8px 4px 16px; font-size: 20px; font-weight: 400; }
-.card { background: var(--card-background-color); border-radius: var(--ha-card-border-radius);
-  border: var(--ha-card-border-width) solid var(--ha-card-border-color); box-shadow: var(--ha-card-box-shadow);
-  margin-bottom: 16px; overflow: hidden; }
-.card h2 { margin: 0; padding: 24px 16px 16px; font-size: 24px; font-weight: 400; line-height: 32px; }
-.card h3 { margin: 16px 0 8px; font-size: 14px; font-weight: 500; }
-.card .content { padding: 0 16px 16px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 0 16px; }
-.state { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 500; }
-.ok { color: var(--success-color); } .bad { color: var(--warning-color); } .muted { color: var(--secondary-text-color); }
+@functools.cache
+def stylesheet() -> str:
+    """The stylesheet all the apps share (ha.css), then this page's own rules."""
+    try:
+        return STYLESHEET.read_text() + APP_STYLE
+    except OSError as err:
+        LOGGER.warning("Cannot read the stylesheet: %s", err)
+        return APP_STYLE
+
+
+APP_STYLE = """
+section > h2 { margin: 8px 4px 16px; font-size: var(--ha-font-size-xl); font-weight: var(--ha-font-weight-normal); }
+.card h3 { margin: 16px 0 8px; font-size: var(--ha-font-size-m); font-weight: var(--ha-font-weight-medium); }
 ul.reasons { margin: 0 0 8px; padding-left: 32px; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 8px 16px 8px 0; vertical-align: top; }
-td { border-top: 1px solid var(--divider-color); }
-th { font-weight: 500; font-size: 12px; white-space: nowrap; }
-table.kv th { width: 45%; font-size: 14px; font-weight: 400; color: var(--secondary-text-color);
-  border-top: 1px solid var(--divider-color); white-space: normal; }
-table.kv tr:first-child th, table.kv tr:first-child td { border-top: 0; }
-.list th:first-child, .list td:first-child { padding-left: 16px; }
-.list th { height: 56px; vertical-align: middle; border-bottom: 1px solid var(--divider-color); }
-.list td { height: 52px; vertical-align: middle; font-size: 13px; }
-.list tr:first-child td { border-top: 0; }
-.nowrap { white-space: nowrap; }
-.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.sub { display: block; font-size: 12px; line-height: 16px; color: var(--secondary-text-color); }
-.scroll { overflow-x: auto; }
-.note { padding: 0 16px 16px; font-size: 12px; color: var(--secondary-text-color); }
 .content .note { padding: 8px 0 0; }
 svg.chart { display: block; width: 100%; min-width: 640px; height: auto; margin-bottom: 8px; }
 svg.chart .grid { stroke: var(--divider-color); stroke-width: 1; }
@@ -233,19 +193,16 @@ svg.chart .band { fill: var(--primary-color); fill-opacity: .25; }
 svg.chart .bar { fill: var(--primary-color); }
 svg.chart .bar.gap { fill-opacity: .4; }
 svg.chart .hit { fill: transparent; }
-svg.chart .hit:hover { fill: color-mix(in srgb, var(--primary-text-color) 8%, transparent); }
-.version { margin-top: 8px; padding: 0 16px 24px; text-align: center; color: var(--secondary-text-color);
-  font-size: 12px; }
-@media (max-width: 600px) { .opt { display: none; } }
+svg.chart .hit:hover { fill: var(--ha-hover); }
 """
 # Takes Home Assistant's theme from the page around the ingress frame (same
 # origin) and follows it; refreshes the page
 THEME_VARS = ("primary-background-color", "secondary-background-color", "card-background-color",
-              "primary-text-color", "secondary-text-color", "divider-color", "primary-color", "success-color",
-              "warning-color", "error-color", "disabled-text-color", "sidebar-background-color",
-              "sidebar-text-color", "sidebar-icon-color", "app-header-border-bottom", "ha-card-border-radius",
-              "ha-card-border-width", "ha-card-border-color", "ha-card-box-shadow", "ha-font-family-body",
-              "header-height")
+              "primary-text-color", "secondary-text-color", "divider-color", "primary-color", "text-primary-color",
+              "success-color", "warning-color", "error-color", "info-color", "disabled-text-color",
+              "sidebar-background-color", "sidebar-text-color", "sidebar-icon-color", "app-header-border-bottom",
+              "ha-card-border-radius", "ha-card-border-width", "ha-card-border-color", "ha-card-box-shadow",
+              "ha-font-family-body", "header-height")
 SCRIPT = """(() => {
   try {
     const outer = window.parent.document.documentElement;
@@ -858,13 +815,15 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
         last = max((s["at"] for s in drives.values()), default=0)
     stamp = time.strftime("%H:%M:%S", time.localtime(last)) if last else ""
     actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>' if stamp else ""
-    actions += f'<a href="" id="refresh" title="{esc(t["refresh"])}" role="button">{icon("refresh")}</a>'
+    actions += (f'<a href="" id="refresh" class="icon-button" title="{esc(t["refresh"])}" '
+                f'aria-label="{esc(t["refresh"])}" role="button">{icon("refresh")}</a>')
     # The settings are Home Assistant's own page, outside the ingress frame
-    actions += (f'<a href="/config/app/{esc(slug)}/config" target="_top" title="{esc(t["settings"])}">'
-                f'{icon("settings")}</a>' if slug else "")
+    actions += (f'<a href="/config/app/{esc(slug)}/config" target="_top" class="icon-button" '
+                f'title="{esc(t["settings"])}" aria-label="{esc(t["settings"])}">{icon("settings")}</a>'
+                if slug else "")
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f"<title>{esc(t['title'])}</title><style>{STYLE}</style><script>{SCRIPT}</script></head><body>"
+            f"<title>{esc(t['title'])}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
             f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
             f'<main>{body}</main><footer class="version">{esc(f"{APP_NAME} {version()}".strip())}</footer>'
             "</body></html>")

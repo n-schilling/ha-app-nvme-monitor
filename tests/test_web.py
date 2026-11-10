@@ -240,6 +240,13 @@ class Page(Fixture):
         self.assertNotIn("The drive is healthy", page)
         self.assertNotIn("<h2>Health</h2>", page)
 
+    def test_shared_stylesheet_then_own_rules(self) -> None:
+        self.write(status())
+        page = self.page(self.state())
+        shared, own = page.find("ha.css: Home Assistant's look"), page.find("svg.chart .band")
+        self.assertTrue(0 < shared < own)
+        self.assertIn('class="icon-button" title="Refresh"', page)
+
     def test_version_at_the_bottom(self) -> None:
         self.write(status())
         with unittest.mock.patch.dict(os.environ, {"APP_VERSION": "9.8.7"}):
