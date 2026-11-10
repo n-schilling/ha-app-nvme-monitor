@@ -1,23 +1,45 @@
 # NVMe Monitor app for Home Assistant
 
-[![Release](https://img.shields.io/github/v/release/n-schilling/ha-app-nvme-monitor)](https://github.com/n-schilling/ha-app-nvme-monitor/releases)
-[![CI](https://github.com/n-schilling/ha-app-nvme-monitor/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/n-schilling/ha-app-nvme-monitor/actions/workflows/ci.yaml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 ![Home Assistant app](https://img.shields.io/badge/Home%20Assistant-app-41BDF5?logo=homeassistant&logoColor=white)
 ![Supports aarch64](https://img.shields.io/badge/aarch64-yes-green.svg)
 ![Supports amd64](https://img.shields.io/badge/amd64-yes-green.svg)
 
-![NVMe Monitor](nvme_monitor/logo.png)
+A Home Assistant app that reads the SMART log of the host's NVMe drives and shows their health, wear, temperatures, thermal throttling and history on a web page in Home Assistant. For automations it publishes one **Drive problem** sensor per drive through MQTT discovery, which turns on when a drive needs attention and names the reasons. It only reads: nothing is written to the drives or the host. Crashes of host programs are covered by the [Crash Guard](https://github.com/n-schilling/ha-app-crash-guard) app.
 
-A Home Assistant app that shows the health, wear, temperatures and history of the host's NVMe drives on a page of its own in Home Assistant, and publishes one Drive problem sensor per drive through MQTT discovery for automations. Crashes of host programs are covered by the [Crash Guard](https://github.com/n-schilling/ha-app-crash-guard) app.
+Requires Home Assistant 2026.11 or later.
 
-## The web page
+## Screenshots
 
-The page (**NVMe** in the sidebar, or **Open web UI** on the app's page) looks like Home Assistant's settings and takes over the theme in use. The screenshots show made-up demo data.
+The data in these pictures is made up for these pictures.
 
-| Drive, health and temperatures | History |
-|---|---|
-| ![Status, SMART values, thermal throttling and temperatures of a drive](docs/screenshots/overview.png) | ![Temperature per hour, data written per day and days on which a counter of trouble grew](docs/screenshots/history.png) |
+<img src="docs/screenshots/overview.png" alt="The web page: the drive is healthy, with model, capacity, data read and written, health values, thermal throttling and all temperatures" width="700">
+
+<img src="docs/screenshots/history.png" alt="The history on the web page: temperature per hour for 30 days, data written per day for 90 days with a gap shown as lighter bars, the days on which a counter of trouble grew, and the app's version at the bottom" width="700">
+
+<img src="docs/screenshots/phone-dark.png" alt="The web page on a phone in dark mode" width="300">
+
+## Overview
+
+```mermaid
+flowchart LR
+    drives[("NVMe drives<br>/dev/nvme0 to nvme3")]
+    subgraph app["NVMe Monitor app"]
+        monitor["Monitor<br>(root, SYS_ADMIN)"]
+        status[("Status file<br>per drive")]
+        web["Web page<br>(own user, no capabilities)"]
+        history[("History<br>/data/web")]
+        monitor --> status --> web
+        web <--> history
+    end
+    drives -- "SMART log, error log,<br>every interval" --> monitor
+    monitor -- "MQTT discovery<br>and states" --> broker["MQTT broker"]
+    broker --> sensor["Drive problem<br>binary sensor"]
+    sensor --> automations["Your automations"]
+    web -- "ingress" --> ui["Open web UI<br>in Home Assistant"]
+```
+
+The monitor reads every drive once per interval, judges whether it needs attention and sends that to Home Assistant; the whole SMART log goes to the web page, which keeps its own history. The [documentation](nvme_monitor/DOCS.md) has the details, with the flow of a reading and the states of the sensor.
 
 ## Installation
 
@@ -31,10 +53,10 @@ The page (**NVMe** in the sidebar, or **Open web UI** on the app's page) looks l
    https://github.com/n-schilling/ha-app-nvme-monitor
    ```
 
-2. Open the app from the app store.
-3. Install **NVMe Monitor** and start it.
+2. Find **NVMe Monitor** in the list of apps, install it and start it.
+3. Open the web page with **Open web UI** on the app's page.
 
-See [the documentation](nvme_monitor/DOCS.md) for the web page, the sensor, options, an example automation and troubleshooting. Changes are listed in the [changelog](nvme_monitor/CHANGELOG.md).
+See [the documentation](nvme_monitor/DOCS.md) for the options, the web page, the sensor, an example automation and troubleshooting. Changes are listed in the [changelog](nvme_monitor/CHANGELOG.md).
 
 ## Support
 

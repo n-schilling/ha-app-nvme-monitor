@@ -2,6 +2,32 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-11-10
+
+### Added
+
+- The web page shows the app's name and version at the bottom
+- Days without a reading are visible in the history: data written over a gap is spread evenly over its days as lighter bars, with the whole amount in the tooltip, and a counter of trouble that grew in a gap is listed with the whole gap instead of the day after it
+
+### Changed
+
+- The web page runs as a user of its own, without root and without the `SYS_ADMIN` capability the monitor needs to read the drives; its history moves to `/data/web` when the app starts
+- The MQTT broker's address and credentials are no longer on the command line of the mosquitto clients, where other processes could read the password, but in their configuration files, readable by root only; a broker that asks for TLS gets it
+- The web page sends security headers (`X-Content-Type-Options`, a content security policy)
+- A drive whose SMART log does not answer at the start is monitored all the same and read again every interval; before, it was skipped until the app restarted
+- Without any NVMe drive or MQTT service the app stops with a fatal error in its log, instead of restarting every second
+- Requires Home Assistant 2026.11 or later; the documentation follows its terms, with an overview, the flow of a reading and the states of the sensor as diagrams, and new screenshots
+- The web page uses the stylesheet all apps of this author share, closer to Home Assistant's own look
+- Built on `home-assistant/base-debian:trixie-2026.11.0`, pinned, so a rebuild gives the same image; Dependabot proposes new versions
+
+### Fixed
+
+- A drive that could not be read lost its error log entries and throttling state on the page, just when they would explain the failure; the page now keeps those of the last reading
+- "No reading: the monitor does not run" did not show for a drive that was not readable
+- A history file with entries in an unexpected form stopped the history from growing; such entries are now left out with one warning
+- Stopping the app could take up to 10 seconds while the MQTT broker was away
+- A compiled Python file that does not belong to the app was part of the repository and the image
+
 ## [3.0.0] - 2026-11-02
 
 ### Added
