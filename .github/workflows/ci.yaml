@@ -1,9 +1,13 @@
 name: CI
+# scripts/check.sh runs the same checks locally; keep the two in step.
 
 on:
   push:
     branches: [main, dev]
   pull_request:
+  schedule:
+    # Weekly, so a new base image or app linter that breaks the build shows up
+    - cron: "23 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -23,14 +27,25 @@ jobs:
           path: ./nvme_monitor
       - name: Changelog has the version
         run: .github/scripts/changelog-section.sh nvme_monitor/CHANGELOG.md "$(yq -r '.version' nvme_monitor/config.yaml)" > /dev/null
+      - name: No compiled Python in the repository
+        run: |
+          if git ls-files | grep -E '(^|/)__pycache__/|\.pyc$'; then
+            echo "::error::compiled Python files are checked in"
+            exit 1
+          fi
       - name: Shell scripts
         run: >-
           shellcheck --shell=bash --severity=warning --external-sources
           nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/*/run
           nvme_monitor/rootfs/usr/local/lib/mqtt-device.sh
-          tests/test_monitor.sh tests/test_broker.sh tests/stubs/nvme tests/stubs/mosquitto_*
+          tests/test_*.sh tests/stubs/nvme tests/stubs/mosquitto_* scripts/*.sh
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
       - name: Python
-        run: pipx run ruff==0.17.3 check nvme_monitor/rootfs/usr/local/lib tests
+        run: |
+          pip install ruff==0.17.3
+          ruff check nvme_monitor/rootfs/usr/local/lib tests scripts
 
   test:
     name: Build and test (${{ matrix.arch }})
@@ -65,6 +80,13 @@ jobs:
           docker run --rm --network none --platform "${PLATFORM}"
           -v "${PWD}/tests:/tests:ro" --entrypoint bash nvme-monitor:test
           /tests/test_monitor.sh
+      - name: Test the image
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: >-
+          docker run --rm --network none --platform "${PLATFORM}"
+          -v "${PWD}/tests:/tests:ro" --entrypoint bash nvme-monitor:test
+          /tests/test_image.sh
       - name: Test the web page
         env:
           PLATFORM: ${{ matrix.platform }}
