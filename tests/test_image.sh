@@ -26,10 +26,11 @@ expect 'no root and no capabilities after the switch' \
 expect 'no compiled Python in the image' "$(find /usr/local/lib -name '*.pyc' -o -name __pycache__ | wc -l)" 0
 
 echo '# web/run'
-# s6-setuidgid is a stub that records how the page would start
 mkdir -p "${WORK}/bin" /data
+# s6-setuidgid records how the page would start; anything else runs for real
 cat > "${WORK}/bin/s6-setuidgid" <<'STUB'
 #!/bin/bash
+[[ "$2" == python3 ]] || exec /command/s6-setuidgid "$@"
 printf '%s|%s|%s\n' "$*" "${NVME_INTERVAL}" "$(stat -c '%U %a' /data/web /data/web/history.json | tr '\n' ' ')" > "${STARTED}"
 STUB
 chmod +x "${WORK}/bin/s6-setuidgid"
@@ -44,6 +45,7 @@ expect 'starts the page as its user with the interval' "$(cut -d'|' -f1-2 "${WOR
     'nvmeweb python3 /usr/local/lib/nvme_web.py|90'
 expect 'history moved and owned by that user' "$(cut -d'|' -f3 "${WORK}/started" 2>/dev/null)|$(ls /data)" \
     'nvmeweb 700 nvmeweb 644 |web'
+expect 'nothing left behind' "$(ls -A /data/web)" history.json
 
 if (( FAILED )); then
     echo '--- log:'

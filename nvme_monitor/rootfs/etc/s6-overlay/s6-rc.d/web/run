@@ -9,13 +9,17 @@ readonly USER_NAME=nvmeweb
 readonly DIR=/data/web
 
 # The history belongs to the page's user; 3.0.0 kept it in /data itself.
-# The file changes owner while it is still in /data, which only root can
-# write to; nothing in the user's folder is touched as root.
+# The user copies it into its folder; root, which never works in that
+# folder, only removes the old file from /data, which only root can write to.
 install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 700 "${DIR}"
 if [[ -f /data/history.json && ! -L /data/history.json ]]; then
-    chown "${USER_NAME}:${USER_NAME}" /data/history.json
-    mv -n /data/history.json "${DIR}/history.json"
-    rm -f /data/history.json
+    # shellcheck disable=SC2016  # expanded by the inner shell
+    if s6-setuidgid "${USER_NAME}" sh -c \
+        '[ -e "$1" ] || { cp /data/history.json "$1.tmp" && mv -T "$1.tmp" "$1"; }' _ "${DIR}/history.json"; then
+        rm -f /data/history.json
+    else
+        bashio::log.warning 'Could not take over the history of the web page from /data/history.json'
+    fi
 fi
 
 # The options file is root's; the page only needs the interval
