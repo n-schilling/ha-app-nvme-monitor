@@ -66,7 +66,7 @@ The monitor is a bash script, [`monitor/run`](nvme_monitor/rootfs/etc/s6-overlay
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs what CI runs (changelog, shellcheck, ruff, the image built for this machine with the tests of the monitor, the image and the web page, and the test against a real MQTT broker; `--no-docker` skips everything that needs Docker). It needs bash, Python 3 and Docker; shellcheck and ruff come from Docker and `uvx` when they are not installed. The screenshots come from `scripts/screenshots.py` (see its header for the setup): it renders the page with made-up data and draws it with a headless browser.
+`scripts/check.sh` runs what CI runs (changelog, shellcheck, ruff, the image built for this machine with the tests of the monitor, the image and the web page, the test against a real MQTT broker and the Page check; `--no-docker` skips everything that needs Docker). It needs bash, Python 3 and Docker; shellcheck and ruff come from Docker and `uvx` when they are not installed. The Page check and the screenshots are one script, `scripts/screenshots.py` (see its header for the setup): it starts the built image with made-up data in a throwaway container, opens the page through a stand-in for Home Assistant's ingress with a headless browser, checks the header every app page shares, the version line, console and content security policy, light, dark and phone width, and writes the screenshots to `docs/screenshots`.
 
 Releases: work on `dev`, raise `version` in `nvme_monitor/config.yaml` and add its section to the changelog; when CI is green on `main`, the release workflow tags the version and publishes the release with that section.
 

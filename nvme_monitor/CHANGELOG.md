@@ -2,6 +2,13 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-11-11
+
+### Changed
+
+- The web page has the same header as the pages of the other apps: the app's name, the time the page was read ("As of …", also before the first reading), a refresh button that reloads the page, and the gear for the app's settings
+- CI checks the page in the built image through a made-up ingress with headless Chromium (header, version line, no console errors or content security policy violations, light, dark, German, phone width); the same script makes the screenshots
+
 ## [3.1.1] - 2026-11-11
 
 ### Security

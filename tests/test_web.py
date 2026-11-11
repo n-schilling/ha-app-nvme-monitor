@@ -292,6 +292,20 @@ class Page(Fixture):
     def test_settings_link_leaves_the_frame(self) -> None:
         self.write(status())
         self.assertIn('href="/config/app/a4b1f1df_nvme_monitor/config" target="_top"', self.page(self.state()))
+        # Without a slug there is no settings button
+        self.assertNotIn("/config/app/", w.render(self.state(), "en", None, now=NOW, every=60))
+
+    def test_header_like_every_app(self) -> None:
+        # The app's name, then stamp, refresh and settings, also before the first reading
+        state = w.State(w.History(self.path), self.dir, clock=lambda: NOW)
+        stamp = time.strftime("%H:%M:%S", time.localtime(NOW))
+        for lang, as_of in (("en", "As of"), ("de", "Stand")):
+            page = self.page(state, lang)
+            header = page[page.index("<header>"):page.index("</header>")]
+            self.assertTrue(header.startswith('<header><h1>NVMe Monitor</h1><div class="actions">'))
+            self.assertLess(header.index(f'<span class="stamp opt">{as_of} {stamp}</span>'), header.index('id="refresh"'))
+            self.assertLess(header.index('id="refresh"'), header.index('target="_top"'))
+        self.assertIn("<title>NVMe Monitor</title>", page)
 
 
 class Charts(Fixture):

@@ -95,6 +95,36 @@ jobs:
           -v "${PWD}/tests:/tests:ro" --entrypoint python3 nvme-monitor:test
           -m unittest discover -v -s /tests -p 'test_*.py'
 
+  page:
+    name: Page
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: |
+          version=$(yq -r '.version' nvme_monitor/config.yaml)
+          docker build --build-arg "BUILD_VERSION=${version}" \
+            -t nvme-monitor:page nvme_monitor
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Playwright
+        run: |
+          pip install playwright==1.65.0
+          python -m playwright install --with-deps chromium
+      - name: Page through ingress (header, version line, console, light, dark, phone)
+        run: python scripts/screenshots.py --image nvme-monitor:page --out screenshots
+      - name: Screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshots
+          path: screenshots
+          if-no-files-found: ignore
+
   broker:
     name: Against a real MQTT broker
     runs-on: ubuntu-latest

@@ -12,9 +12,9 @@ days on which a counter of trouble grew.
 
 The page is rendered on the server and needs nothing beyond Python's standard
 library. Its only script takes Home Assistant's theme from the page around
-the ingress frame and swaps in a fresh copy of the page every REFRESH seconds
-or when the refresh button is pressed. It changes nothing: the server answers
-GET only.
+the ingress frame, swaps in a fresh copy of the page every REFRESH seconds
+and reloads it when the refresh button is pressed. It changes nothing: the
+server answers GET only.
 
 The server runs as its own user without root and without capabilities, so it
 cannot reach the drives; it reads the status files and writes its history
@@ -67,7 +67,7 @@ WARNING_BITS = ("spare", "temperature", "reliability", "read_only", "backup", "p
 
 TEXT = {
     "en": {
-        "title": "NVMe drives", "settings": "Settings", "refresh": "Refresh", "as_of": "As of {}",
+        "settings": "Settings", "refresh": "Refresh", "as_of": "As of {}",
         "loading": "Waiting for the first reading …", "no_drive": "No readable NVMe drive.",
         "healthy": "The drive is healthy", "problem": "The drive needs attention",
         "unreadable": "SMART log not readable since {}; the values are from the last reading",
@@ -111,7 +111,7 @@ TEXT = {
         "unknown": "–", "ago": "{} ago", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
     },
     "de": {
-        "title": "NVMe-Laufwerke", "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}",
+        "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}",
         "loading": "Warte auf die erste Abfrage …", "no_drive": "Kein lesbares NVMe-Laufwerk.",
         "healthy": "Das Laufwerk ist in Ordnung", "problem": "Das Laufwerk braucht Aufmerksamkeit",
         "unreadable": "SMART-Log seit {} nicht lesbar; die Werte stammen von der letzten Abfrage",
@@ -196,7 +196,8 @@ svg.chart .hit { fill: transparent; }
 svg.chart .hit:hover { fill: var(--ha-hover); }
 """
 # Takes Home Assistant's theme from the page around the ingress frame (same
-# origin) and follows it; refreshes the page
+# origin) and follows it; updates the page by itself and reloads it on the
+# refresh button
 THEME_VARS = ("primary-background-color", "secondary-background-color", "card-background-color",
               "primary-text-color", "secondary-text-color", "divider-color", "primary-color", "text-primary-color",
               "success-color", "warning-color", "error-color", "info-color", "disabled-text-color",
@@ -217,33 +218,27 @@ SCRIPT = """(() => {
       new MutationObserver(take).observe(outer, { attributes: true, attributeFilter: ["style", "class"] });
     }
   } catch (e) {}
-  // Swaps in a fresh copy of the page
+  // Swaps in a fresh copy of the page's content and its stamp
   let busy = false;
-  const update = async (now) => {
+  const update = async () => {
     if (busy) return;
     busy = true;
-    const button = document.querySelector("#refresh");
-    if (now && button) button.classList.add("busy");
     try {
       const page = await fetch(location.href, { cache: "no-store" });
       if (!page.ok) return;
       const doc = new DOMParser().parseFromString(await page.text(), "text/html");
       document.querySelector("main").replaceWith(doc.querySelector("main"));
-      const stamp = document.querySelector("header .stamp"), freshStamp = doc.querySelector("header .stamp");
-      if (freshStamp) {
-        if (stamp) stamp.replaceWith(freshStamp);
-        else document.querySelector("#actions").prepend(freshStamp);
-      }
+      const stamp = document.querySelector("header .stamp"), fresh = doc.querySelector("header .stamp");
+      if (stamp && fresh) stamp.replaceWith(fresh);
     } catch (e) {
     } finally {
       busy = false;
-      if (button) button.classList.remove("busy");
     }
   };
   document.addEventListener("click", (e) => {
-    if (e.target.closest("#refresh")) { e.preventDefault(); update(true); }
+    if (e.target.closest("#refresh")) { e.preventDefault(); location.reload(); }
   });
-  setInterval(() => { if (!document.hidden) update(false); }, REFRESH * 1000);
+  setInterval(() => { if (!document.hidden) update(); }, REFRESH * 1000);
 })();""".replace("NAMES", json.dumps(THEME_VARS)).replace("REFRESH", str(REFRESH))
 
 
@@ -812,9 +807,9 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
                            for drive, status in drives.items())
         else:
             body = card(None, f'<p class="muted">{esc(t["loading"] if not state.at else t["no_drive"])}</p>')
-        last = max((s["at"] for s in drives.values()), default=0)
-    stamp = time.strftime("%H:%M:%S", time.localtime(last)) if last else ""
-    actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>' if stamp else ""
+    # The same header as every app's page: name, then stamp, refresh, settings
+    stamp = time.strftime("%H:%M:%S", time.localtime(now))
+    actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>'
     actions += (f'<a href="" id="refresh" class="icon-button" title="{esc(t["refresh"])}" '
                 f'aria-label="{esc(t["refresh"])}" role="button">{icon("refresh")}</a>')
     # The settings are Home Assistant's own page, outside the ingress frame
@@ -823,8 +818,8 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
                 if slug else "")
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f"<title>{esc(t['title'])}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
-            f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
+            f"<title>{esc(APP_NAME)}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
+            f'<header><h1>{esc(APP_NAME)}</h1><div class="actions">{actions}</div></header>'
             f'<main>{body}</main><footer class="version">{esc(f"{APP_NAME} {version()}".strip())}</footer>'
             "</body></html>")
 

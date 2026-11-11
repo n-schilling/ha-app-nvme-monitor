@@ -1,12 +1,15 @@
 #!/bin/bash
 # Runs locally what the CI workflow runs, so a push only confirms what already
 # passed here: the changelog check, shellcheck, ruff, the
-# image build with its tests (monitor, image, web page) and the test against
-# a real MQTT broker. Keep the steps in step with .github/workflows/ci.yaml.
+# image build with its tests (monitor, image, web page), the test against
+# a real MQTT broker and the Page check (scripts/screenshots.py through a
+# made-up ingress, screenshots into a temporary folder, docs/screenshots stays
+# as it is). Keep the steps in step with .github/workflows/ci.yaml.
 #
 # Usage: scripts/check.sh [--no-docker]
 #
-# The shell linter comes from PATH, else from Docker; ruff from uvx, else PATH. The
+# The shell linter comes from PATH, else from Docker; ruff from uvx, else PATH;
+# Playwright for the Page check from uv. The
 # app linter (frenck/action-addon-linter) runs in CI only.
 # The image is built for this machine's architecture only; CI builds amd64
 # and aarch64. --no-docker skips everything that needs Docker.
@@ -16,6 +19,7 @@ cd "$(dirname "$0")/.." || exit 2
 readonly RUFF=ruff==0.17.3
 readonly BROKER=eclipse-mosquitto:2.1.2-alpine
 readonly IMAGE=nvme-monitor:check
+readonly PLAYWRIGHT=playwright==1.65.0
 
 failed=()
 skipped=()
@@ -75,6 +79,13 @@ in_image() { # in_image <entrypoint> <args...>
     shift
     docker run --rm --network none -v "${PWD}/tests:/tests:ro" --entrypoint "${entry}" "${IMAGE}" "$@"
 }
+page_check() {
+    local out rc=0
+    out=$(mktemp -d)
+    uv run --quiet --with "${PLAYWRIGHT}" python scripts/screenshots.py --image "${IMAGE}" --out "${out}" > /dev/null || rc=$?
+    rm -rf "${out}"
+    return "${rc}"
+}
 broker_test() {
     local net=nvme-check-$$ rc=0
     docker network create "${net}" > /dev/null
@@ -99,6 +110,11 @@ if ${docker}; then
         run "Test the image" in_image bash /tests/test_image.sh
         run "Test the web page" in_image python3 -m unittest discover -s /tests -p 'test_*.py'
         run "Against a real MQTT broker" broker_test
+        if command -v uv > /dev/null; then
+            run "Page" page_check
+        else
+            skipped+=("Page (no uv for Playwright)")
+        fi
     fi
 fi
 skipped+=("App configuration (frenck/action-addon-linter runs in CI only)")
