@@ -2,6 +2,13 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1] - 2026-11-11
+
+### Security
+
+- The web page no longer gets the Supervisor token
+- A narrower AppArmor profile: only the capabilities, networks, programs and paths the app uses, measured on Home Assistant OS before it was enforced
+
 ## [3.1.0] - 2026-11-10
 
 ### Added
