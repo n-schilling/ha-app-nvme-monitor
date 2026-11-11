@@ -3,8 +3,7 @@ abi <abi/3.0>,
 
 # Reads the NVMe SMART log through the admin interface (SYS_ADMIN) and talks
 # to the MQTT broker; writes nothing on the host. s6-overlay and the monitor
-# run as root, the web page as user nvmeweb. Measured on Home Assistant OS in
-# complain mode before it enforced.
+# run as root, the web page as user nvmeweb. Tested on a real installation.
 profile nvme_monitor flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
