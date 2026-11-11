@@ -1,5 +1,6 @@
-# The Supervisor builds the image on the host; Dependabot proposes new tags
-FROM ghcr.io/home-assistant/base-debian:trixie-2026.11.0
+# The Supervisor builds the image on the host. Pinned by version and digest,
+# so a moved tag cannot change the image unnoticed; Dependabot updates both
+FROM ghcr.io/home-assistant/base-debian:trixie-2026.11.0@sha256:d996c8f8ef0096a1ac3756766149b31b8171afc663068cc192f2bcab20f1b8c9
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
