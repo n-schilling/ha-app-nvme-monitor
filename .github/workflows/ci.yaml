@@ -111,10 +111,13 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
+      # The runner's Google Chrome; Playwright's Chromium (and its packages
+      # from the Ubuntu mirrors) only when there is none
       - name: Playwright
         run: |
           pip install playwright==1.65.0
-          python -m playwright install --with-deps chromium
+          if command -v google-chrome; then google-chrome --version
+          else python -m playwright install --with-deps chromium; fi
       - name: Page through ingress (header, version line, console, light, dark, phone)
         run: python scripts/screenshots.py --image nvme-monitor:page --out screenshots
       - name: Screenshots
