@@ -302,7 +302,8 @@ class Page(Fixture):
         for lang, as_of in (("en", "As of"), ("de", "Stand")):
             page = self.page(state, lang)
             header = page[page.index("<header>"):page.index("</header>")]
-            self.assertTrue(header.startswith('<header><h1>NVMe Monitor</h1><div class="actions">'))
+            self.assertTrue(header.startswith('<header><img class="app-icon" src="icon.png" alt="" width="24" height="24">'
+                                              '<h1>NVMe Monitor</h1><div class="actions">'))
             self.assertLess(header.index(f'<span class="stamp opt">{as_of} {stamp}</span>'), header.index('id="refresh"'))
             self.assertLess(header.index('id="refresh"'), header.index('target="_top"'))
         self.assertIn("<title>NVMe Monitor</title>", page)
@@ -434,6 +435,25 @@ class Server(Fixture):
         self.assertIn("Das Laufwerk ist in Ordnung", page)
         self.assertEqual(self.get(base + "/other")[0], 404)
         self.assertEqual(self.get(base + "/../../data/options.json")[0], 404)
+
+    def test_app_icon(self) -> None:
+        # The store icon, copied into the image; the page links it relative to the ingress path
+        # (in the image the checkout is not there; the image's copy is then the one to serve)
+        repo = TESTS.parent / "nvme_monitor/icon.png"
+        icon = repo.read_bytes() if repo.exists() else w.APP_ICON
+        self.assertTrue(icon and icon.startswith(b"\x89PNG"), "icon.png in the image or the checkout")
+        base = self.serve(set())
+        w.APP_ICON, saved = icon, w.APP_ICON
+        try:
+            with urllib.request.urlopen(base + "/icon.png") as answer:
+                self.assertEqual((answer.status, answer.headers["Content-Type"], answer.read()), (200, "image/png", icon))
+                self.assertEqual(answer.headers["Cache-Control"], "max-age=86400")
+            w.APP_ICON = None
+            self.assertEqual(self.get(base + "/icon.png")[0], 404)
+        finally:
+            w.APP_ICON = saved
+        self.assertIn('<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>',
+                      self.get(base + "/")[1])
 
     def test_page_in_home_assistants_language(self) -> None:
         base = self.serve(set())

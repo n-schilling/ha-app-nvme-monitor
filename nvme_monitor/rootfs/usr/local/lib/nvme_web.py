@@ -184,7 +184,24 @@ def stylesheet() -> str:
         return APP_STYLE
 
 
+# The app's store icon at the left of the header, copied into the image next
+# to the stylesheet; the page links it as icon.png, relative to the ingress path
+APP_ICON_FILE = STYLESHEET.with_name("icon.png")
+
+
+def app_icon() -> bytes | None:
+    try:
+        return APP_ICON_FILE.read_bytes()
+    except OSError:
+        LOGGER.warning("Icon %s missing", APP_ICON_FILE)
+        return None
+
+
+APP_ICON = app_icon()
+APP_ICON_TAG = '<img class="app-icon" src="icon.png" alt="" width="24" height="24">'
+
 APP_STYLE = """
+header > .app-icon { flex: none; width: 24px; height: 24px; margin-right: 12px; }
 section > h2 { margin: 8px 4px 16px; font-size: var(--ha-font-size-xl); font-weight: var(--ha-font-weight-normal); }
 .card h3 { margin: 16px 0 8px; font-size: var(--ha-font-size-m); font-weight: var(--ha-font-weight-medium); }
 ul.reasons { margin: 0 0 8px; padding-left: 32px; }
@@ -842,7 +859,7 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(APP_NAME)}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
-            f'<header><h1>{esc(APP_NAME)}</h1><div class="actions">{actions}</div></header>'
+            f'<header>{APP_ICON_TAG}<h1>{esc(APP_NAME)}</h1><div class="actions">{actions}</div></header>'
             f'<main>{body}</main><footer class="version">{esc(f"{APP_NAME} {version()}".strip())}</footer>'
             "</body></html>")
 
@@ -876,17 +893,22 @@ def handler(state: State, slug: str | None, allowed: set[str]):
         def do_GET(self) -> None:  # noqa: N802 (the standard library's name)
             if allowed and self.client_address[0] not in allowed:
                 self._send(403, "text/plain", b"only through Home Assistant")
+            elif self.path.split("?", 1)[0] == "/icon.png":
+                if APP_ICON is None:
+                    self._send(404, "text/plain", b"not found")
+                else:
+                    self._send(200, "image/png", APP_ICON, {"Cache-Control": "max-age=86400"})
             elif self.path.split("?", 1)[0] != "/":
                 self._send(404, "text/plain", b"not found")
             else:
                 page = render(state, lang_of(self.headers.get("Cookie"), self.headers.get("Accept-Language")), slug)
                 self._send(200, "text/html; charset=utf-8", page.encode())
 
-        def _send(self, code: int, kind: str, body: bytes) -> None:
+        def _send(self, code: int, kind: str, body: bytes, extra: dict | None = None) -> None:
             self.send_response(code)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
-            for name, value in HEADERS.items():
+            for name, value in {**HEADERS, **(extra or {})}.items():
                 self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)

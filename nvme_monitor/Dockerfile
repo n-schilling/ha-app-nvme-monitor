@@ -15,6 +15,8 @@ RUN \
     && useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin nvmeweb
 
 COPY rootfs /
+# The store icon, also at the left of the page's header (served as icon.png)
+COPY icon.png /usr/local/share/ha-app/icon.png
 
 ARG BUILD_ARCH BUILD_DATE BUILD_DESCRIPTION BUILD_NAME BUILD_REF BUILD_REPOSITORY BUILD_VERSION
 # For the origin of the MQTT discovery and the version line of the web page

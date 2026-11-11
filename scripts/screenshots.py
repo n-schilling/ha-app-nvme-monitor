@@ -234,7 +234,14 @@ def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, 
         const h = document.querySelector("body > header");
         const actions = h && h.querySelector(":scope > .actions");
         return h && {
-            first: h.firstElementChild.outerHTML.slice(0, 40), h1: h.querySelector("h1")?.textContent,
+            tags: [...h.children].slice(0, 2).map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
+            h1: h.querySelector("h1")?.textContent,
+            // The store icon left of the name: loaded, 24 px, in the row of the name
+            icon: h.firstElementChild.matches("img.app-icon") ? (() => {
+              const box = h.firstElementChild.getBoundingClientRect(), name = h.querySelector(":scope > h1").getBoundingClientRect();
+              return {src: h.firstElementChild.getAttribute("src"), loaded: h.firstElementChild.complete && h.firstElementChild.naturalWidth > 0,
+                      size: [box.width, box.height], row: Math.abs((box.top + box.bottom) / 2 - (name.top + name.bottom) / 2) < 2};
+            })() : null,
             actions: actions ? [...actions.children].map((e) => ({
                 tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, text: e.textContent,
                 href: e.getAttribute("href"), target: e.getAttribute("target"), title: e.title,
@@ -247,8 +254,10 @@ def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, 
         problems.append(f"{where}: no header")
         return
     de = lang == "de"
-    problems.check(header["first"].startswith("<h1>") and header["h1"] == w.APP_NAME,
-                   f"{where}: the header does not start with <h1>{w.APP_NAME}</h1>: {header['first']}")
+    problems.check(header["tags"] == ["img.app-icon", "h1"] and header["h1"] == w.APP_NAME,
+                   f"{where}: the header does not start with the icon, then <h1>{w.APP_NAME}</h1>: {header['tags']}")
+    problems.check(header["icon"] == {"src": "icon.png", "loaded": True, "size": [24, 24], "row": True},
+                   f"{where}: the app's icon does not show, 24 px, in the row of the name: {header['icon']}")
     a = header["actions"]
     problems.check([(x["tag"], x["id"]) for x in a] == [("span", ""), ("a", "refresh"), ("a", "")],
                    f"{where}: the actions are not stamp, refresh, settings: {[(x['tag'], x['id']) for x in a]}")
