@@ -11,8 +11,10 @@ Assistant's ingress does: through a small proxy at the Supervisor's address
 checks the header every app page shares (the app's name, the stamp, the
 refresh button, the settings link with target _top and the app's slug), the
 version line, that there are no console errors and no CSP violations, and
-light, dark, German and phone width. Then it takes the screenshots, into
-docs/screenshots or the folder given with --out.
+light, dark, German and phone width, and that the page takes Home
+Assistant's language (a stand-in for its frontend in German, English and
+French around the frame) over the browser's, reloading once. Then it takes
+the screenshots, into docs/screenshots or the folder given with --out.
 
 The browser is the installed Google Chrome, else Playwright's Chromium
 (`uv run --with playwright==1.65.0 playwright install chromium` once).
@@ -40,7 +42,7 @@ sys.path.insert(0, str(ROOT / "nvme_monitor/rootfs/usr/local/lib"))
 
 import nvme_web as w  # noqa: E402
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Page, sync_playwright  # noqa: E402
+from playwright.sync_api import Frame, Page, sync_playwright  # noqa: E402
 
 DAY, HOUR = 86400, 3600
 UNITS_PER_GB = 1e9 / w.UNIT
@@ -51,25 +53,34 @@ SLUG = HOST.replace("-", "_")
 INGRESS = "/api/hassio_ingress/demo-token/"
 
 # Home Assistant's ingress, as far as the page sees it: the path prefix, the
-# client address and the frame of Home Assistant's page around it
+# client address and the frame of Home Assistant's page around it; with
+# /?lang=xx also a stand-in for the frontend's <home-assistant> element, whose
+# hass names that language (and light mode), as share/ha-app/ha-lang.js reads it
 PROXY = r"""
-import http.server, sys, urllib.error, urllib.request
+import http.server, re, sys, urllib.error, urllib.parse, urllib.request
 APP, PREFIX = sys.argv[1], sys.argv[2]
 OUTER = ('<!doctype html><html><head><meta charset="utf-8"><title>Home Assistant</title></head>'
-         '<body style="margin:0"><iframe src="%s" style="border:0;width:100vw;height:100vh"></iframe></body></html>'
-         % PREFIX).encode()
+         '<body style="margin:0">HASS<iframe src="%s" style="border:0;width:100vw;height:100vh"></iframe></body></html>'
+         % PREFIX)
+HASS = ('<home-assistant></home-assistant><script>document.querySelector("home-assistant").hass ='
+        ' { language: "LANG", locale: { language: "LANG" }, themes: { darkMode: false } };</script>')
+LANG = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?")
 ICON = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1" fill="#009ac7"/></svg>'
 class Proxy(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/":
-            return self.answer(200, {"Content-Type": "text/html; charset=utf-8"}, OUTER)
+        path, _, query = self.path.partition("?")
+        if path == "/":
+            lang = (urllib.parse.parse_qs(query).get("lang") or [""])[0]
+            hass = HASS.replace("LANG", lang) if LANG.fullmatch(lang) else ""
+            return self.answer(200, {"Content-Type": "text/html; charset=utf-8"}, OUTER.replace("HASS", hass).encode())
         if self.path == "/favicon.ico":  # Home Assistant has one; the browser asks for it
             return self.answer(200, {"Content-Type": "image/svg+xml"}, ICON)
         if not self.path.startswith(PREFIX):
             return self.answer(404, {"Content-Type": "text/plain"}, b"not found")
         headers = {"X-Ingress-Path": PREFIX.rstrip("/")}
-        if self.headers.get("Accept-Language"):
-            headers["Accept-Language"] = self.headers["Accept-Language"]
+        for name in ("Accept-Language", "Cookie"):
+            if self.headers.get(name):
+                headers[name] = self.headers[name]
         request = urllib.request.Request(APP + "/" + self.path[len(PREFIX):], headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=10) as answer:
@@ -218,7 +229,7 @@ def watch(page: Page, problems: Problems, where: str) -> None:
     page.on("pageerror", lambda e: problems.append(f"{where}: script error: {e}"))
 
 
-def check_header(page: Page, problems: Problems, where: str, lang: str, phone: bool) -> None:
+def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, phone: bool) -> None:
     header = page.evaluate("""() => {
         const h = document.querySelector("body > header");
         const actions = h && h.querySelector(":scope > .actions");
@@ -258,6 +269,44 @@ def check_header(page: Page, problems: Problems, where: str, lang: str, phone: b
     expected = f'<footer class="version">{w.APP_NAME} {version()}</footer>'
     problems.check(header["footer"] == expected, f"{where}: the last element is {header['footer']}, not {expected}")
     problems.check(not header["wide"], f"{where}: the page is wider than the window")
+
+
+def check_language(browser, base: str, problems: Problems) -> None:
+    """The browser asks for English; the page follows Home Assistant's language
+    (share/ha-app/ha-lang.js): one reload when it changes, none when not."""
+    context = browser.new_context(viewport={"width": 1100, "height": 1000}, locale="en-US",
+                                  extra_http_headers={"Accept-Language": "en"})
+    page = context.new_page()
+    watch(page, problems, "language")
+    for ha_lang, lang, expected in (("de", "de", 2), ("de", "de", 1), ("en-GB", "en", 2), ("fr", "en", 2),
+                                    ("fr", "en", 1)):
+        where = f"Home Assistant in {ha_lang}"
+        app, loads = in_home_assistant(page, base, ha_lang)
+        shown = app.evaluate("[document.documentElement.lang, getComputedStyle(document.documentElement).visibility]")
+        problems.check(shown == [lang, "visible"], f"{where}: page not in {lang} or not shown ({shown})")
+        problems.check(loads == expected, f"{where}: loaded {loads} time(s), not {expected}")
+        check_header(app, problems, where, lang, False)
+        held = [(k["value"], k["path"]) for k in context.cookies() if k["name"] == "ha_lang"]
+        problems.check(held == [(ha_lang.split("-")[0], INGRESS)], f"{where}: the cookie is {held}")
+    context.close()
+
+
+def in_home_assistant(page: Page, base: str, lang: str) -> tuple[Frame, int]:
+    """Opens the page in a stand-in for Home Assistant's frontend in that
+    language; the app's frame and how often it loaded."""
+    loads: list[str] = []
+
+    def seen(frame: Frame) -> None:
+        if frame.parent_frame is not None and frame.url.startswith(base + INGRESS):
+            loads.append(frame.url)
+
+    page.on("framenavigated", seen)
+    page.goto(f"{base}/?lang={lang}", wait_until="load")
+    page.wait_for_timeout(1500)  # room for another reload, which must not come
+    page.remove_listener("framenavigated", seen)
+    app = next(f for f in page.frames if f.parent_frame is not None)
+    app.locator("body > header h1").wait_for()
+    return app, len(loads)
 
 
 def dark(page: Page) -> bool:
@@ -319,13 +368,15 @@ def main() -> None:
                     frame.locator("footer.version").wait_for()
                     problems.check(frame.locator("h1").text_content() == w.APP_NAME, f"{where}: no page in the frame")
                     context.close()
+                check_language(browser, base, problems)
                 browser.close()
         finally:
             stop(name)
     if problems:
         print("Page check FAILED:", *problems, sep="\n  ", file=sys.stderr)
         raise SystemExit(1)
-    print("Page check passed: header, version line, no console errors or CSP violations, light, dark, de, phone width")
+    print("Page check passed: header, version line, no console errors or CSP violations, light, dark, de, "
+          "phone width, Home Assistant's language")
 
 
 if __name__ == "__main__":

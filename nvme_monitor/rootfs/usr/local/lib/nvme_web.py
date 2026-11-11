@@ -49,6 +49,9 @@ APP_NAME = "NVMe Monitor"
 # The look all the apps' pages share: /usr/local/share/ha-app/ha.css in the
 # image, the same place in the repository for the tests
 STYLESHEET = Path(__file__).resolve().parents[1] / "share/ha-app/ha.css"
+# Home Assistant's language for the page (cookie ha_lang), shared like the
+# stylesheet; it runs first, in the page's one script
+SHARED_SCRIPT = STYLESHEET.with_name("ha-lang.js")
 POLL = 15                # seconds between two reads of the status files
 REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the history per 5 minutes
@@ -242,6 +245,17 @@ SCRIPT = """(() => {
 })();""".replace("NAMES", json.dumps(THEME_VARS)).replace("REFRESH", str(REFRESH))
 
 
+def shared_script() -> str:
+    try:
+        return SHARED_SCRIPT.read_text()
+    except OSError as err:
+        LOGGER.warning("Cannot read the language script: %s", err)
+        return ""
+
+
+SCRIPT = shared_script() + SCRIPT
+
+
 # --- Status files and history -------------------------------------------------------
 def read_status(directory: Path) -> dict[str, dict]:
     """The latest status file of every drive, by its name (nvme0, …)."""
@@ -408,9 +422,18 @@ class State:
 
 
 # --- Formatting --------------------------------------------------------------------------
-def lang_of(header: str | None) -> str:
-    """German if the browser puts German before English, else English."""
-    for part in (header or "").split(","):
+def lang_of(cookie: str | None, accept: str | None = None) -> str:
+    """German or English, as Home Assistant's interface shows it.
+
+    The page script keeps Home Assistant's language in the cookie ha_lang
+    (share/ha-app/ha-lang.js): German for "de", English for everything else.
+    Only without that cookie, German if the browser puts German before English.
+    """
+    for part in (cookie or "").split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "ha_lang":
+            return "de" if value.strip().lower() == "de" else "en"
+    for part in (accept or "").split(","):
         code = part.split(";")[0].strip().lower()
         if code.startswith("de"):
             return "de"
@@ -856,7 +879,7 @@ def handler(state: State, slug: str | None, allowed: set[str]):
             elif self.path.split("?", 1)[0] != "/":
                 self._send(404, "text/plain", b"not found")
             else:
-                page = render(state, lang_of(self.headers.get("Accept-Language")), slug)
+                page = render(state, lang_of(self.headers.get("Cookie"), self.headers.get("Accept-Language")), slug)
                 self._send(200, "text/html; charset=utf-8", page.encode())
 
         def _send(self, code: int, kind: str, body: bytes) -> None:

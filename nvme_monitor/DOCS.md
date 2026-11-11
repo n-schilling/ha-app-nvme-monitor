@@ -19,7 +19,7 @@ Requires Home Assistant 2026.11 or later.
 
 ## Web page
 
-Open it with **Open web UI** on the app's page (**Settings → Apps → NVMe Monitor**); to have it in the sidebar as well, turn on **Show in sidebar** there. Only administrators can open it, and it only reads. It follows the browser's language (English or German) and Home Assistant's theme, light or dark, and updates every 30 seconds. The header shows the app's name and, on wider screens, when the page was read (**As of …**); the round arrow reloads the page, the gear opens the app's settings. At the bottom it shows the app's name and version.
+Open it with **Open web UI** on the app's page (**Settings → Apps → NVMe Monitor**); to have it in the sidebar as well, turn on **Show in sidebar** there. Only administrators can open it, and it only reads. It speaks the language of your Home Assistant interface (your profile's language: German, else English), follows Home Assistant's theme, light or dark, and updates every 30 seconds. It keeps that language in a cookie for this page only; after you change the language in your profile, the page follows the next time you open it, reloading once. The header shows the app's name and, on wider screens, when the page was read (**As of …**); the round arrow reloads the page, the gear opens the app's settings. At the bottom it shows the app's name and version.
 
 For every drive it shows:
 

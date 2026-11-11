@@ -60,7 +60,7 @@ See [the documentation](nvme_monitor/DOCS.md) for the options, the web page, the
 
 ## Development
 
-The monitor is a bash script, [`monitor/run`](nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/monitor/run), the web page a Python program without third-party packages, [`nvme_web.py`](nvme_monitor/rootfs/usr/local/lib/nvme_web.py); the image installs only Debian packages. The page's look comes from the stylesheet shared by these apps, [`ha.css`](nvme_monitor/rootfs/usr/local/share/ha-app/ha.css), which stays identical in every app.
+The monitor is a bash script, [`monitor/run`](nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/monitor/run), the web page a Python program without third-party packages, [`nvme_web.py`](nvme_monitor/rootfs/usr/local/lib/nvme_web.py); the image installs only Debian packages. The page's look comes from the stylesheet shared by these apps, [`ha.css`](nvme_monitor/rootfs/usr/local/share/ha-app/ha.css), and its language from the script shared by them, [`ha-lang.js`](nvme_monitor/rootfs/usr/local/share/ha-app/ha-lang.js); both stay identical in every app.
 
 ```bash
 scripts/check.sh
@@ -68,7 +68,7 @@ scripts/check.sh
 
 `scripts/check.sh` runs what CI runs (changelog, shellcheck, ruff, the image built for this machine with the tests of the monitor, the image and the web page, the test against a real MQTT broker and the Page check; `--no-docker` skips everything that needs Docker). It needs bash, Python 3 and Docker; shellcheck and ruff come from Docker and `uvx` when they are not installed. The Page check and the screenshots are one script, `scripts/screenshots.py` (see its header for the setup): it starts the built image with made-up data in a throwaway container, opens the page through a stand-in for Home Assistant's ingress with a headless browser, checks the header every app page shares, the version line, console and content security policy, light, dark and phone width, and writes the screenshots to `docs/screenshots`.
 
-Releases: work on `dev`, raise `version` in `nvme_monitor/config.yaml` and add its section to the changelog; when CI is green on `main`, the release workflow tags the version and publishes the release with that section.
+Releases: work on `dev`, raise `version` in `nvme_monitor/config.yaml` and add its section to the changelog. CI runs on `dev` (amd64 and aarch64 each on a runner of its own kind); once it is green, push that commit to `main`. CI does not run again there: the release workflow checks that CI passed for the commit, then tags the version and publishes the release with that section.
 
 ## Support
 

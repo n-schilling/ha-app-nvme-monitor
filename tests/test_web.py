@@ -393,9 +393,18 @@ class Format(unittest.TestCase):
         self.assertEqual(w.Format("de").dec(1234.5, 1), "1.234,5")
 
     def test_language(self) -> None:
-        self.assertEqual(w.lang_of("de-DE,de;q=0.9,en;q=0.8"), "de")
-        self.assertEqual(w.lang_of("en-US,de;q=0.5"), "en")
-        self.assertEqual(w.lang_of(None), "en")
+        # The cookie of share/ha-app/ha-lang.js decides; the browser's languages only without it
+        self.assertEqual(w.lang_of("a=b; ha_lang=de", "en-US"), "de")
+        self.assertEqual(w.lang_of("ha_lang=en", "de-DE,de"), "en")
+        self.assertEqual(w.lang_of("ha_lang=fr", "de-DE,de"), "en")
+        self.assertEqual(w.lang_of(None, "de-DE,de;q=0.9,en;q=0.8"), "de")
+        self.assertEqual(w.lang_of("other=1", "en-US,de;q=0.5"), "en")
+        self.assertEqual(w.lang_of(None, None), "en")
+
+    def test_shared_language_script_first(self) -> None:
+        shared = w.SHARED_SCRIPT.read_text()
+        self.assertIn("ha_lang", shared)
+        self.assertTrue(w.SCRIPT.startswith(shared))
 
 
 class Server(Fixture):
@@ -425,6 +434,11 @@ class Server(Fixture):
         self.assertIn("Das Laufwerk ist in Ordnung", page)
         self.assertEqual(self.get(base + "/other")[0], 404)
         self.assertEqual(self.get(base + "/../../data/options.json")[0], 404)
+
+    def test_page_in_home_assistants_language(self) -> None:
+        base = self.serve(set())
+        self.assertIn('<html lang="de">', self.get(base + "/", Cookie="ha_lang=de", **{"Accept-Language": "en"})[1])
+        self.assertIn('<html lang="en">', self.get(base + "/", Cookie="ha_lang=en", **{"Accept-Language": "de"})[1])
 
     def test_security_headers(self) -> None:
         with urllib.request.urlopen(self.serve(set()) + "/") as answer:
