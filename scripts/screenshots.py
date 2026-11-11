@@ -8,7 +8,10 @@ demo data (status files and two months of history written here; nothing is
 read from a real drive) and opens it with a headless browser the way Home
 Assistant's ingress does: through a small proxy at the Supervisor's address
 172.30.32.2 under an ingress path, once on its own and once in a frame. It
-checks the header every app page shares (the app's name, the stamp, the
+opens every view (Overview, Health, Temperature, History) by its URL and
+checks the tabs (after the name in its row, on a phone a bar with icons at
+the bottom, the right one active; tab, reload and back in the frame) and the
+header every app page shares (the icon, the app's name, the stamp, the
 refresh button, the settings link with target _top and the app's slug), the
 version line, that there are no console errors and no CSP violations, and
 light, dark, German and phone width, and that the page takes Home
@@ -229,12 +232,19 @@ def watch(page: Page, problems: Problems, where: str) -> None:
     page.on("pageerror", lambda e: problems.append(f"{where}: script error: {e}"))
 
 
-def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, phone: bool) -> None:
+# The views (tabs in the header): where each one is, and the labels
+TABS = (("overview", "?"), ("health", "?tab=health"), ("temperature", "?tab=temperature"), ("history", "?tab=history"))
+TAB_LABELS = {"en": ["Overview", "Health", "Temperature", "History"],
+              "de": ["Übersicht", "Gesundheit", "Temperatur", "Verlauf"]}
+
+
+def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, phone: bool,
+                 tab: str = "overview") -> None:
     header = page.evaluate("""() => {
         const h = document.querySelector("body > header");
         const actions = h && h.querySelector(":scope > .actions");
         return h && {
-            tags: [...h.children].slice(0, 2).map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
+            tags: [...h.children].slice(0, 3).map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
             h1: h.querySelector("h1")?.textContent,
             // The store icon left of the name: loaded, 24 px, in the row of the name
             icon: h.firstElementChild.matches("img.app-icon") ? (() => {
@@ -242,6 +252,17 @@ def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, 
               return {src: h.firstElementChild.getAttribute("src"), loaded: h.firstElementChild.complete && h.firstElementChild.naturalWidth > 0,
                       size: [box.width, box.height], row: Math.abs((box.top + box.bottom) / 2 - (name.top + name.bottom) / 2) < 2};
             })() : null,
+            // The views: tabs right after the name, in its row (on a phone a bar at the bottom of the window)
+            tabs: (() => {
+              const nav = h.querySelector(":scope > nav.tabs");
+              if (!nav) return null;
+              const name = h.querySelector(":scope > h1").getBoundingClientRect(), box = nav.getBoundingClientRect();
+              const mid = (r) => (r.top + r.bottom) / 2;
+              return {labels: [...nav.children].map((a) => a.textContent), hrefs: [...nav.children].map((a) => a.getAttribute("href")),
+                      active: [...nav.querySelectorAll("a.active[aria-current=page]")].map((a) => a.getAttribute("href")),
+                      row: Math.abs(mid(box) - mid(name)) < 2, bottom: Math.abs(box.bottom - window.innerHeight) < 1,
+                      icons: [...nav.children].every((a) => a.querySelector("svg") && getComputedStyle(a.querySelector("svg")).display !== "none")};
+            })(),
             actions: actions ? [...actions.children].map((e) => ({
                 tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, text: e.textContent,
                 href: e.getAttribute("href"), target: e.getAttribute("target"), title: e.title,
@@ -254,8 +275,16 @@ def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, 
         problems.append(f"{where}: no header")
         return
     de = lang == "de"
-    problems.check(header["tags"] == ["img.app-icon", "h1"] and header["h1"] == w.APP_NAME,
-                   f"{where}: the header does not start with the icon, then <h1>{w.APP_NAME}</h1>: {header['tags']}")
+    problems.check(header["tags"] == ["img.app-icon", "h1", "nav.tabs"] and header["h1"] == w.APP_NAME,
+                   f"{where}: the header does not start with the icon, <h1>{w.APP_NAME}</h1>, the tabs: {header['tags']}")
+    tabs = header["tabs"] or {}
+    problems.check(tabs.get("labels") == TAB_LABELS[lang] and tabs.get("hrefs") == [href for _, href in TABS],
+                   f"{where}: the tabs are {tabs.get('labels')} {tabs.get('hrefs')}")
+    problems.check(tabs.get("active") == [dict(TABS)[tab]], f"{where}: the active tab is {tabs.get('active')}, not {tab}")
+    if phone:
+        problems.check(bool(tabs.get("bottom") and tabs.get("icons")), f"{where}: the tabs are no bar with icons at the bottom: {tabs}")
+    else:
+        problems.check(bool(tabs.get("row") and not tabs.get("icons")), f"{where}: the tabs are not in the row of the name: {tabs}")
     problems.check(header["icon"] == {"src": "icon.png", "loaded": True, "size": [24, 24], "row": True},
                    f"{where}: the app's icon does not show, 24 px, in the row of the name: {header['icon']}")
     a = header["actions"]
@@ -278,6 +307,33 @@ def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, 
     expected = f'<footer class="version">{w.APP_NAME} {version()}</footer>'
     problems.check(header["footer"] == expected, f"{where}: the last element is {header['footer']}, not {expected}")
     problems.check(not header["wide"], f"{where}: the page is wider than the window")
+
+
+def check_tabs_in_frame(page: Page, base: str, problems: Problems) -> None:
+    """Tabs are links, the view is in the URL: tab, reload and back in Home Assistant's frame."""
+    frame = page.frame_locator("iframe")
+    app = next(f for f in page.frames if f.parent_frame is not None)
+    try:
+        for label, href in (("History", "?tab=history"), ("Health", "?tab=health")):
+            with page.expect_event("framenavigated", predicate=lambda f: f is app):
+                frame.locator("nav.tabs > a", has_text=label).click()
+            frame.locator("nav.tabs > a.active", has_text=label).wait_for()
+            problems.check(app.url == base + INGRESS + href, f"frame: the {label} tab opens {app.url}, not {href}")
+        with page.expect_event("framenavigated", predicate=lambda f: f is app):
+            frame.locator("#refresh").click()
+        frame.locator("nav.tabs > a.active", has_text="Health").wait_for()
+        problems.check(app.url == base + INGRESS + "?tab=health", f"frame: refresh leaves the view ({app.url})")
+        with page.expect_event("framenavigated", predicate=lambda f: f is app):
+            app.evaluate("setTimeout(() => history.back(), 0)")  # the browser's back, inside the frame
+        frame.locator("nav.tabs > a.active", has_text="History").wait_for()
+        problems.check(app.url == base + INGRESS + "?tab=history", f"frame: back does not return to the view ({app.url})")
+        with page.expect_event("framenavigated", predicate=lambda f: f is app):
+            frame.locator("nav.tabs > a", has_text="Overview").click()
+        with page.expect_event("framenavigated", predicate=lambda f: f is app):
+            frame.locator("a.state[href='?tab=health']").first.click()
+        frame.locator("nav.tabs > a.active", has_text="Health").wait_for()
+    except PlaywrightError as err:
+        problems.append(f"frame: the tabs do not work: {err.message.splitlines()[0]}")
 
 
 def check_language(browser, base: str, problems: Problems) -> None:
@@ -339,7 +395,7 @@ def main() -> None:
                 chrome = Path("/Applications/Google Chrome.app").exists() or shutil.which("google-chrome")
                 browser = p.chromium.launch(channel="chrome" if chrome else None)
                 for lang, scheme, width, height, shots in (
-                    ("en", "light", 1100, 1000, ("overview", "history")),
+                    ("en", "light", 1100, 1000, ("overview", "health", "temperature", "history")),
                     ("en", "dark", 390, 844, ("phone-dark",)),
                     ("de", "light", 1100, 1000, ()),
                     ("de", "dark", 1100, 1000, ()),
@@ -351,24 +407,21 @@ def main() -> None:
                     page = context.new_page()
                     watch(page, problems, where)
                     page.goto(base + INGRESS, wait_until="load")
-                    check_header(page, problems, where, lang, width < 600)
                     problems.check(dark(page) == (scheme == "dark"), f"{where}: the page is not {scheme}")
-                    for shot in shots:
-                        path = args.out / f"{shot}.png"
-                        if shot == "history":
-                            # From the history card to the version line at the bottom
-                            top = page.locator(".card", has=page.locator("h2", has_text="History")).bounding_box()["y"]
-                            full = page.evaluate("document.documentElement.scrollHeight")
-                            page.screenshot(path=path, full_page=True,
-                                            clip={"x": 0, "y": top - 16, "width": width, "height": full - top + 16})
-                        else:
-                            page.screenshot(path=path)
-                        print(path)
-                    # The refresh button reloads the page
+                    # Every view by its URL; the history last, for the refresh below
+                    for tab, href in TABS:
+                        if tab != "overview":
+                            page.goto(base + INGRESS + href, wait_until="load")
+                        check_header(page, problems, f"{where} {tab}", lang, width < 600, tab)
+                        if tab in shots or (tab == "overview" and "phone-dark" in shots):
+                            path = args.out / f"{'phone-dark' if 'phone-dark' in shots else tab}.png"
+                            page.screenshot(path=path, full_page=tab != "overview")
+                            print(path)
+                    # The refresh button reloads the page and stays on the view
                     try:
                         with page.expect_navigation(wait_until="load", timeout=10_000):
                             page.click("#refresh", timeout=5_000)
-                        check_header(page, problems, f"{where} after refresh", lang, width < 600)
+                        check_header(page, problems, f"{where} after refresh", lang, width < 600, "history")
                     except PlaywrightError as err:
                         problems.append(f"{where}: the refresh button does not reload the page: {err.message.splitlines()[0]}")
                     # In Home Assistant's frame: allowed by the page's CSP, same header
@@ -376,6 +429,8 @@ def main() -> None:
                     frame = page.frame_locator("iframe")
                     frame.locator("footer.version").wait_for()
                     problems.check(frame.locator("h1").text_content() == w.APP_NAME, f"{where}: no page in the frame")
+                    if (lang, scheme) == ("en", "light"):
+                        check_tabs_in_frame(page, base, problems)
                     context.close()
                 check_language(browser, base, problems)
                 browser.close()

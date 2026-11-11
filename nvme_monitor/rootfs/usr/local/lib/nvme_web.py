@@ -37,6 +37,7 @@ import time
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 LOGGER = logging.getLogger("nvme_web")
 
@@ -112,6 +113,7 @@ TEXT = {
         "errors": "Error log", "error_count": "Error", "queue": "Queue", "command": "Command",
         "status_field": "Status", "lba": "LBA", "namespace": "Namespace",
         "unknown": "–", "ago": "{} ago", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
+        "overview": "Overview", "tab_temperature": "Temperature",
     },
     "de": {
         "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}",
@@ -158,11 +160,17 @@ TEXT = {
         "errors": "Fehlerprotokoll", "error_count": "Fehler", "queue": "Queue", "command": "Befehl",
         "status_field": "Status", "lba": "LBA", "namespace": "Namespace",
         "unknown": "–", "ago": "vor {}", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
+        "overview": "Übersicht", "tab_temperature": "Temperatur",
     },
 }
 
 # Material Design Icons (Apache 2.0), as Home Assistant draws them
 ICONS = {
+    "overview": "M19,5V7H15V5H19M9,5V11H5V5H9M19,13V19H15V13H19M9,17V19H5V17H9M21,3H13V9H21V3M11,3H3V13H11V3M21,11H13V21H21V11M11,15H3V21H11V15Z",
+    "health": "M7.5,4A5.5,5.5 0 0,0 2,9.5C2,10 2.09,10.5 2.22,11H6.3L7.57,7.63C7.87,6.83 9.05,6.75 9.43,7.63L11.5,13L12.09,11.58C12.22,11.25 12.57,11 13,11H21.78C21.91,10.5 22,10 22,9.5A5.5,5.5 0 0,0 16.5,4C14.64,4 13,4.93 12,6.34C11,4.93 9.36,4 7.5,4V4M3,12.5A1,1 0 0,0 2,13.5A1,1 0 0,0 3,14.5H5.44L11,20C12,20.9 12,20.9 13,20L18.56,14.5H21A1,1 0 0,0 22,13.5A1,1 0 0,0 21,12.5H13.4L12.47,14.8C12.07,15.81 10.92,15.67 10.55,14.83L8.5,9.5L7.54,11.83C7.39,12.21 7.05,12.5 6.6,12.5H3Z",
+    "temperature": "M15 13V5A3 3 0 0 0 9 5V13A5 5 0 1 0 15 13M12 4A1 1 0 0 1 13 5V8H11V5A1 1 0 0 1 12 4Z",
+    "history": "M16,11.78L20.24,4.45L21.97,5.45L16.74,14.5L10.23,10.75L5.46,19H22V21H2V3H4V17.54L9.5,8L16,11.78Z",
+    "chevron": "M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z",
     "settings": "M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M10,22C9.75,22 9.54,21.82 9.5,21.58L9.13,18.93C8.5,18.68 7.96,18.34 7.44,17.94L4.95,18.95C4.73,19.03 4.46,18.95 4.34,18.73L2.34,15.27C2.21,15.05 2.27,14.78 2.46,14.63L4.57,12.97L4.5,12L4.57,11L2.46,9.37C2.27,9.22 2.21,8.95 2.34,8.73L4.34,5.27C4.46,5.05 4.73,4.96 4.95,5.05L7.44,6.05C7.96,5.66 8.5,5.32 9.13,5.07L9.5,2.42C9.54,2.18 9.75,2 10,2H14C14.25,2 14.46,2.18 14.5,2.42L14.87,5.07C15.5,5.32 16.04,5.66 16.56,6.05L19.05,5.05C19.27,4.96 19.54,5.05 19.66,5.27L21.66,8.73C21.79,8.95 21.73,9.22 21.54,9.37L19.43,11L19.5,12L19.43,13L21.54,14.63C21.73,14.78 21.79,15.05 21.66,15.27L19.66,18.73C19.54,18.95 19.27,19.04 19.05,18.95L16.56,17.95C16.04,18.34 15.5,18.68 14.87,18.93L14.5,21.58C14.46,21.82 14.25,22 14,22H10M11.25,4L10.88,6.61C9.68,6.86 8.62,7.5 7.85,8.39L5.44,7.35L4.69,8.65L6.8,10.2C6.4,11.37 6.4,12.64 6.8,13.8L4.68,15.36L5.43,16.66L7.86,15.62C8.63,16.5 9.68,17.14 10.87,17.38L11.24,20H12.76L13.13,17.39C14.32,17.14 15.37,16.5 16.14,15.62L18.57,16.66L19.32,15.36L17.2,13.81C17.6,12.64 17.6,11.37 17.2,10.2L19.31,8.65L18.56,7.35L16.15,8.39C15.38,7.5 14.32,6.86 13.12,6.62L12.75,4H11.25Z",
     "ok": "M12 2C6.5 2 2 6.5 2 12S6.5 22 12 22 22 17.5 22 12 17.5 2 12 2M10 17L5 12L6.41 10.59L10 14.17L17.59 6.58L19 8L10 17Z",
     "alert": "M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
@@ -202,6 +210,33 @@ APP_ICON_TAG = '<img class="app-icon" src="icon.png" alt="" width="24" height="2
 
 APP_STYLE = """
 header > .app-icon { flex: none; width: 24px; height: 24px; margin-right: 12px; }
+header > h1 { flex: none; }
+/* The views as tabs in the header row, like Home Assistant's own (and Network
+   Plus); on phone width a bar at the bottom with icons, as in its app */
+header > nav.tabs { display: flex; align-self: stretch; min-width: 0; margin-left: 24px; overflow-x: auto;
+  scrollbar-width: none; }
+nav.tabs > a { display: flex; align-items: center; justify-content: center; padding: 0 20px; position: relative;
+  color: var(--sidebar-text-color); font-weight: var(--ha-font-weight-medium); white-space: nowrap; opacity: .8; }
+nav.tabs > a:hover { background: var(--ha-hover); }
+nav.tabs > a.active { color: var(--primary-color); opacity: 1; }
+nav.tabs > a.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--primary-color); }
+nav.tabs > a > svg { display: none; }
+@media (max-width: 600px) {
+  header > nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; margin: 0; overflow: hidden;
+    background: var(--sidebar-background-color); border-top: 1px solid var(--divider-color);
+    padding-bottom: env(safe-area-inset-bottom); }
+  nav.tabs > a { flex: 1 1 0; flex-direction: column; gap: 2px; height: 56px; padding: 6px 2px 4px; min-width: 0;
+    font-size: 11px; }
+  nav.tabs > a > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  nav.tabs > a > svg { display: block; padding: 2px 12px; border-radius: 14px; box-sizing: content-box; }
+  nav.tabs > a.active > svg { background: color-mix(in srgb, var(--primary-color) 15%, transparent); }
+  nav.tabs > a.active::after { display: none; }
+  body:has(> header > nav.tabs) { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+}
+a.state { margin: 0 -8px 8px; padding: 4px 8px; border-radius: 8px; }
+a.state:hover { background: var(--ha-hover); }
+a.state > svg.go { margin-left: auto; color: var(--secondary-text-color); }
 section > h2 { margin: 8px 4px 16px; font-size: var(--ha-font-size-xl); font-weight: var(--ha-font-weight-normal); }
 .card h3 { margin: 16px 0 8px; font-size: var(--ha-font-size-m); font-weight: var(--ha-font-weight-medium); }
 ul.reasons { margin: 0 0 8px; padding-left: 32px; }
@@ -540,10 +575,10 @@ def status_card(f: Format, status: dict, now: float, every: int) -> str:
     found = problems(status)
     if found:
         texts = [t["reasons"][key].format(*(warning_bits(f, v[0]),) if key == "warning" else v) for key, v in found]
-        state = (f'<div class="state bad">{icon("alert")}{esc(t["problem"])}</div>'
+        state = (f'<a class="state bad" href="?tab=health">{icon("alert")}{esc(t["problem"])}{icon("chevron", "go")}</a>'
                  f'<ul class="reasons">{"".join(f"<li>{esc(x)}</li>" for x in texts)}</ul>')
     elif status["smart"]:
-        state = f'<div class="state ok">{icon("ok")}{esc(t["healthy"])}</div>'
+        state = f'<a class="state ok" href="?tab=health">{icon("ok")}{esc(t["healthy"])}{icon("chevron", "go")}</a>'
     else:
         # Never read: nothing is known about its health
         state = ""
@@ -806,8 +841,7 @@ def history_card(f: Format, entry: dict | None, now: float) -> str:
              f'<th>{esc(t["change"])}</th></tr></thead><tbody>{rows}</tbody></table>' if rows
              else f'<h3>{esc(t["changes"])}</h3><p class="muted">{esc(t["no_changes"])}</p>')
     note = f'<div class="note">{esc(t["history_since"].format(f.day(min(days))))}</div>'
-    return card(t["history"], temperature_chart(f, entry.get("hours", {}), now) + written_chart(f, days)
-                + table + note)
+    return card(t["history"], written_chart(f, days) + table + note)
 
 
 def errors_card(f: Format, status: dict) -> str:
@@ -825,17 +859,43 @@ def errors_card(f: Format, status: dict) -> str:
                 padded=False)
 
 
-def drive_section(f: Format, status: dict, entry: dict | None, now: float, every: int, titled: bool) -> str:
+# The views of the page, each a tab in the header: (id, label)
+TABS = (("overview", "overview"), ("health", "health"), ("temperature", "tab_temperature"), ("history", "history"))
+
+
+def tab_of(query: dict[str, list[str]]) -> str:
+    tab = (query.get("tab") or [""])[0]
+    return tab if tab in dict(TABS) else "overview"
+
+
+def tabs(t: dict, active: str) -> str:
+    links = "".join(f'<a class="{"active" if tab == active else ""}" href="{"?" if tab == "overview" else f"?tab={tab}"}"'
+                    f'{' aria-current="page"' if tab == active else ""}>{icon(tab)}<span>{esc(t[label])}</span></a>'
+                    for tab, label in TABS)
+    return f'<nav class="tabs">{links}</nav>'
+
+
+def drive_section(f: Format, status: dict, entry: dict | None, now: float, every: int, titled: bool,
+                  tab: str = "overview") -> str:
+    """One drive in one view: the overview sums up, the other views hold the details."""
     head = f"<h2>{esc(status.get('name') or status.get('drive'))}</h2>" if titled else ""
-    if not status["smart"]:
-        # Never read since the app started: no values to show
+    if tab == "overview" or not status["smart"]:
+        # Never read since the app started: no values to show but its state
         return f'<section>{head}<div class="cards"><div>{status_card(f, status, now, every)}</div></div></section>'
-    return (f"<section>{head}<div class=\"cards\"><div>{status_card(f, status, now, every)}{throttling_card(f, status)}</div>"
-            f"<div>{health_card(f, status)}{temperature_card(f, status)}</div></div>"
-            f"{history_card(f, entry, now)}{errors_card(f, status)}</section>")
+    if tab == "health":
+        errors = errors_card(f, status)
+        body = f'<div class="cards"><div>{health_card(f, status)}</div>{f"<div>{errors}</div>" if errors else ""}</div>'
+    elif tab == "temperature":
+        chart = temperature_chart(f, (entry or {}).get("hours", {}), now)
+        body = (f'<div class="cards"><div>{temperature_card(f, status)}</div><div>{throttling_card(f, status)}</div></div>'
+                + (card(None, chart) if chart else ""))
+    else:
+        body = history_card(f, entry, now)
+    return f"<section>{head}{body}</section>"
 
 
-def render(state: State, lang: str, slug: str | None, now: float | None = None, every: int | None = None) -> str:
+def render(state: State, lang: str, slug: str | None, now: float | None = None, every: int | None = None,
+           tab: str = "overview") -> str:
     f = Format(lang)
     t = f.t
     now = state._clock() if now is None else now
@@ -843,7 +903,7 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
     with state.lock:
         drives = dict(state.drives)
         if drives:
-            body = "".join(drive_section(f, status, state.history.data.get(drive), now, every, len(drives) > 1)
+            body = "".join(drive_section(f, status, state.history.data.get(drive), now, every, len(drives) > 1, tab)
                            for drive, status in drives.items())
         else:
             body = card(None, f'<p class="muted">{esc(t["loading"] if not state.at else t["no_drive"])}</p>')
@@ -859,7 +919,7 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(APP_NAME)}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
-            f'<header>{APP_ICON_TAG}<h1>{esc(APP_NAME)}</h1><div class="actions">{actions}</div></header>'
+            f'<header>{APP_ICON_TAG}<h1>{esc(APP_NAME)}</h1>{tabs(t, tab)}<div class="actions">{actions}</div></header>'
             f'<main>{body}</main><footer class="version">{esc(f"{APP_NAME} {version()}".strip())}</footer>'
             "</body></html>")
 
@@ -901,7 +961,8 @@ def handler(state: State, slug: str | None, allowed: set[str]):
             elif self.path.split("?", 1)[0] != "/":
                 self._send(404, "text/plain", b"not found")
             else:
-                page = render(state, lang_of(self.headers.get("Cookie"), self.headers.get("Accept-Language")), slug)
+                page = render(state, lang_of(self.headers.get("Cookie"), self.headers.get("Accept-Language")), slug,
+                              tab=tab_of(parse_qs(self.path.partition("?")[2])))
                 self._send(200, "text/html; charset=utf-8", page.encode())
 
         def _send(self, code: int, kind: str, body: bytes, extra: dict | None = None) -> None:

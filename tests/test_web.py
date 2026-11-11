@@ -6,6 +6,7 @@ monitor service writes them.
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -55,8 +56,10 @@ class Fixture(unittest.TestCase):
         state.refresh()
         return state
 
-    def page(self, state: w.State, lang: str = "en", now: float = NOW) -> str:
-        return w.render(state, lang, "a4b1f1df_nvme_monitor", now=now, every=60)
+    def page(self, state: w.State, lang: str = "en", now: float = NOW, tab: str | None = None) -> str:
+        """One view; without tab every view one after the other, for what is somewhere on the page."""
+        tabs = [tab] if tab else [t for t, _ in w.TABS]
+        return "".join(w.render(state, lang, "a4b1f1df_nvme_monitor", now=now, every=60, tab=t) for t in tabs)
 
 
 class Problems(unittest.TestCase):
@@ -303,7 +306,7 @@ class Page(Fixture):
             page = self.page(state, lang)
             header = page[page.index("<header>"):page.index("</header>")]
             self.assertTrue(header.startswith('<header><img class="app-icon" src="icon.png" alt="" width="24" height="24">'
-                                              '<h1>NVMe Monitor</h1><div class="actions">'))
+                                              '<h1>NVMe Monitor</h1><nav class="tabs">'))
             self.assertLess(header.index(f'<span class="stamp opt">{as_of} {stamp}</span>'), header.index('id="refresh"'))
             self.assertLess(header.index('id="refresh"'), header.index('target="_top"'))
         self.assertIn("<title>NVMe Monitor</title>", page)
@@ -377,6 +380,41 @@ class Charts(Fixture):
     def test_ticks_are_round(self) -> None:
         self.assertEqual(w.ticks(38, 49), [38, 40, 42, 44, 46, 48])
         self.assertEqual(w.ticks(0, 1.3e9), [0, 5e8, 1e9])
+
+
+class Views(Charts):
+    def test_tabs_in_the_header(self) -> None:
+        self.write(status())
+        state = self.state()
+        for tab, _ in w.TABS:
+            page = self.page(state, tab=tab)
+            header = page[page.index("<header>"):page.index("</header>")]
+            self.assertEqual(re.findall(r'<a class="[a-z]*" href="([^"]*)"', header),
+                             ["?", "?tab=health", "?tab=temperature", "?tab=history"])
+            self.assertEqual(re.findall(r'<a class="active" href="([^"]*)" aria-current="page">', header),
+                             ["?" if tab == "overview" else f"?tab={tab}"])
+        de = self.page(state, "de", tab="history")
+        self.assertIn("<span>Übersicht</span>", de)
+        self.assertIn("<span>Temperatur</span>", de)
+
+    def test_each_detail_once(self) -> None:
+        self.write(status())
+        state = self.history(10)
+        overview, health, temperature, history = (self.page(state, tab=t) for t, _ in w.TABS)
+        self.assertIn('href="?tab=health">', overview)
+        self.assertIn("Firmware", overview)
+        self.assertNotIn("Firmware", health + temperature + history)
+        self.assertIn("Wear", health)
+        self.assertNotIn("<th>Wear", overview + temperature + history)
+        self.assertIn("No throttling", temperature)
+        self.assertIn("Temperature, lowest and highest per hour", temperature)
+        self.assertNotIn("Temperature, lowest and highest per hour", overview + health + history)
+        self.assertIn('class="bar"', history)
+        self.assertNotIn('class="bar"', overview + health + temperature)
+
+    def test_unknown_tab_is_the_overview(self) -> None:
+        self.assertEqual(w.tab_of({"tab": ["nothing"]}), "overview")
+        self.assertEqual(w.tab_of({"tab": ["history"]}), "history")
 
 
 class Format(unittest.TestCase):

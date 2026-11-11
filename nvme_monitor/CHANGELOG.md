@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-11-11
+
+### Changed
+
+- The page is split into views instead of one long page, as tabs in the header row next to the name, like Network Plus: Overview (each drive's state and key figures, the state leads to its health), Health (health values and the drive's error log), Temperature (sensors, thresholds, throttling and the hourly chart) and History (data written per day and the days a counter of trouble grew). With several drives each view lists them all. The view is in the URL (`?tab=`), so reload and back keep it. On phone width the tabs are a bar with icons at the bottom
+
 ## [3.3.0] - 2026-11-11
 
 ### Changed

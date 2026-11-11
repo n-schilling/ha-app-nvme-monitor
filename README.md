@@ -13,11 +13,15 @@ Requires Home Assistant 2026.11 or later.
 
 The data in these pictures is made up for these pictures.
 
-<img src="docs/screenshots/overview.png" alt="The web page: the drive is healthy, with model, capacity, data read and written, health values, thermal throttling and all temperatures" width="700">
+<img src="docs/screenshots/overview.png" alt="Overview: the drive is healthy, with model, firmware, capacity, hours, data read and written; tabs for Health, Temperature and History in the header" width="700">
 
-<img src="docs/screenshots/history.png" alt="The history on the web page: temperature per hour for 30 days, data written per day for 90 days with a gap shown as lighter bars, the days on which a counter of trouble grew, and the app's version at the bottom" width="700">
+<img src="docs/screenshots/health.png" alt="Health view: wear, spare, media errors, error log entries, unsafe shutdowns, critical warning" width="700">
 
-<img src="docs/screenshots/phone-dark.png" alt="The web page on a phone in dark mode" width="300">
+<img src="docs/screenshots/temperature.png" alt="Temperature view: sensors, thresholds, thermal throttling and the temperature per hour for 30 days" width="700">
+
+<img src="docs/screenshots/history.png" alt="History view: data written per day for 90 days with a gap shown as lighter bars, and the days on which a counter of trouble grew" width="700">
+
+<img src="docs/screenshots/phone-dark.png" alt="The overview on a phone in dark mode, the tabs as a bar at the bottom" width="300">
 
 ## Overview
 
