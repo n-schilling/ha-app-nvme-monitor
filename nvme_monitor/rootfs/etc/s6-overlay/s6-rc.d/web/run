@@ -22,9 +22,10 @@ if [[ -f /data/history.json && ! -L /data/history.json ]]; then
     fi
 fi
 
-# The options file is root's; the page only needs the interval
+# The options file is root's; the page only needs the interval. It gets no
+# Supervisor token: it never talks to the Supervisor
 NVME_INTERVAL=$(bashio::config 'interval')
 export NVME_INTERVAL
 
 bashio::log.info 'Starting the web page'
-exec s6-setuidgid "${USER_NAME}" python3 /usr/local/lib/nvme_web.py
+exec env -u SUPERVISOR_TOKEN s6-setuidgid "${USER_NAME}" python3 /usr/local/lib/nvme_web.py

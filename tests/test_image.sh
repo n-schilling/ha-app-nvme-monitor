@@ -31,12 +31,13 @@ mkdir -p "${WORK}/bin" /data
 cat > "${WORK}/bin/s6-setuidgid" <<'STUB'
 #!/bin/bash
 [[ "$2" == python3 ]] || exec /command/s6-setuidgid "$@"
-printf '%s|%s|%s\n' "$*" "${NVME_INTERVAL}" "$(stat -c '%U %a' /data/web /data/web/history.json | tr '\n' ' ')" > "${STARTED}"
+printf '%s|%s|%s|%s\n' "$*" "${NVME_INTERVAL}" "$(stat -c '%U %a' /data/web /data/web/history.json | tr '\n' ' ')" \
+    "${SUPERVISOR_TOKEN-none}" > "${STARTED}"
 STUB
 chmod +x "${WORK}/bin/s6-setuidgid"
 # The history of 3.0.0 in /data moves to the page's own folder
 printf '{"drives":{}}' > /data/history.json
-STARTED="${WORK}/started" PATH="${WORK}/bin:${PATH}" bash -c '
+SUPERVISOR_TOKEN=secret STARTED="${WORK}/started" PATH="${WORK}/bin:${PATH}" bash -c '
     source /usr/lib/bashio/bashio.sh
     bashio::config() { [[ "$1" == interval ]] && echo 90; }
     source "$0"
@@ -46,6 +47,7 @@ expect 'starts the page as its user with the interval' "$(cut -d'|' -f1-2 "${WOR
 expect 'history moved and owned by that user' "$(cut -d'|' -f3 "${WORK}/started" 2>/dev/null)|$(ls /data)" \
     'nvmeweb 700 nvmeweb 644 |web'
 expect 'nothing left behind' "$(ls -A /data/web)" history.json
+expect 'the page gets no Supervisor token' "$(cut -d'|' -f4 "${WORK}/started" 2>/dev/null)" none
 
 if (( FAILED )); then
     echo '--- log:'
