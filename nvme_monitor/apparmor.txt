@@ -22,6 +22,8 @@ profile nvme_monitor flags=(attach_disconnected,mediate_deleted) {
   network inet stream,
   network inet6 stream,
   network unix,
+  # glibc's name lookup asks the kernel for the interface addresses
+  network netlink raw,
 
   # s6 stops its services; the Supervisor stops the container
   signal (send, receive),
@@ -47,7 +49,9 @@ profile nvme_monitor flags=(attach_disconnected,mediate_deleted) {
   /usr/lib/ r,
   /usr/lib/** rm,
   /usr/lib/bashio/bashio rix,
+  /usr/local/lib/ r,
   /usr/local/lib/** rm,
+  /usr/local/share/** r,
   /lib/** rm,
   /usr/share/** r,
   /etc/** r,
