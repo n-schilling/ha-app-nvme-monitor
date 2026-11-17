@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.3] - 2026-11-17
+
+### Security
+
+- The page allows its one script only by its hash (`script-src 'sha256-…'`) instead of any inline script, so a text that ever slipped through unescaped could not run a script in it; images only from the page itself (no `data:`, which the page does not use). The Page check reads the security headers on every answer of the page
+
 ## [3.4.2] - 2026-11-17
 
 ### Changed

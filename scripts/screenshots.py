@@ -15,8 +15,8 @@ the frame) and the header every app page shares (the icon left of the name,
 the name exactly as `name` in config.yaml, on a phone icon, name and buttons
 within the header, the stamp, the refresh button that reloads and moves the
 stamp, the settings link with target _top and the app's slug), the
-version line, that there are no console errors and no CSP violations, and
-light, dark, German and phone width, and that the page takes Home
+version line, the security headers of every answer of the page (STANDARD.md
+§3), that there are no console errors and no CSP violations, and light, dark, German and phone width, and that the page takes Home
 Assistant's language (a stand-in for its frontend in German, English and
 French around the frame) over the browser's, reloading once. Then it takes
 the screenshots, into docs/screenshots or the folder given with --out.
@@ -235,11 +235,37 @@ class Problems(list):
 
 
 def watch(page: Page, problems: Problems, where: str) -> None:
-    """Console errors, script errors and CSP violations, in every frame."""
+    """Console errors, script errors and CSP violations, in every frame, and
+    the security headers of every answer of the page (not its icon)."""
     page.add_init_script("""document.addEventListener("securitypolicyviolation",
         (e) => console.error("CSP violation: " + e.violatedDirective + " " + e.blockedURI));""")
     page.on("console", lambda m: problems.check(m.type != "error", f"{where}: console error: {m.text} ({m.location.get('url')})"))
     page.on("pageerror", lambda e: problems.append(f"{where}: script error: {e}"))
+
+    def answer(response) -> None:
+        path = response.url.split("?", 1)[0]
+        if INGRESS in path and not path.endswith("/icon.png"):
+            security_headers(response.headers, problems, f"{where} {response.url.partition(INGRESS)[2] or '/'}")
+
+    page.on("response", answer)
+
+
+def security_headers(headers: dict[str, str], problems: Problems, where: str) -> None:
+    """The headers STANDARD.md §3 asks of every answer of the page."""
+    policy = {part.split()[0]: part.split()[1:]
+              for part in headers.get("content-security-policy", "").split(";") if part.strip()}
+    scripts = policy.get("script-src", [])
+    problems.check(policy.get("default-src") == ["'none'"], f"{where}: CSP default-src 'none' ({policy.get('default-src')})")
+    problems.check("'unsafe-inline'" not in scripts and any(s.startswith(("'sha256-", "'nonce-")) for s in scripts),
+                   f"{where}: CSP script-src by hash or nonce ({scripts})")
+    problems.check(policy.get("img-src") == ["'self'"], f"{where}: CSP img-src 'self' ({policy.get('img-src')})")
+    problems.check(policy.get("frame-ancestors") == ["'self'"], f"{where}: CSP frame-ancestors 'self'")
+    problems.check(policy.get("base-uri") == ["'none'"], f"{where}: CSP base-uri 'none'")
+    problems.check(policy.get("form-action") == ["'none'"], f"{where}: CSP form-action 'none'")
+    problems.check(headers.get("x-content-type-options") == "nosniff", f"{where}: X-Content-Type-Options nosniff")
+    problems.check(headers.get("referrer-policy") in ("no-referrer", "same-origin"),
+                   f"{where}: Referrer-Policy ({headers.get('referrer-policy')})")
+    problems.check(headers.get("cache-control") == "no-store", f"{where}: Cache-Control no-store")
 
 
 # The views (tabs in the header): where each one is, and the labels
@@ -475,8 +501,8 @@ def main() -> None:
     if problems:
         print("Page check FAILED:", *problems, sep="\n  ", file=sys.stderr)
         raise SystemExit(1)
-    print("Page check passed: header, version line, no console errors or CSP violations, light, dark, de, "
-          "phone width, Home Assistant's language")
+    print("Page check passed: header, version line, security headers, no console errors or CSP violations, "
+          "light, dark, de, phone width, Home Assistant's language")
 
 
 if __name__ == "__main__":

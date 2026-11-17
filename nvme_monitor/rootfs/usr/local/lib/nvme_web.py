@@ -23,7 +23,9 @@ only. The app's interval and version come in through the environment.
 
 from __future__ import annotations
 
+import base64
 import functools
+import hashlib
 import html
 import itertools
 import json
@@ -281,6 +283,10 @@ def shared_script() -> str:
 
 
 SCRIPT = shared_script() + SCRIPT
+
+# The one script of the page, allowed by its hash: should some text ever slip
+# through unescaped, a script in it would still not run
+SCRIPT_HASH = "sha256-" + base64.b64encode(hashlib.sha256(SCRIPT.encode()).digest()).decode()
 
 
 # --- Status files and history -------------------------------------------------------
@@ -910,13 +916,14 @@ class Server(ThreadingHTTPServer):
 
 
 # The page is rendered on the server and loads nothing: its own inline style
-# and script, the fetch of its fresh copy, and Home Assistant's frame around it
+# and script (by its hash), its icon, the fetch of its fresh copy, and Home
+# Assistant's frame around it
 HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-                               "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
+    "Content-Security-Policy": f"default-src 'none'; style-src 'unsafe-inline'; script-src '{SCRIPT_HASH}'; "
+                               "connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; "
                                "frame-ancestors 'self'",
 }
 

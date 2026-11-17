@@ -4,6 +4,8 @@ The status files are made from the SMART logs in tests/fixtures, as the
 monitor service writes them.
 """
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -516,13 +518,30 @@ class Server(Fixture):
         self.assertIn('<html lang="en">', self.get(base + "/", Cookie="ha_lang=en", **{"Accept-Language": "de"})[1])
 
     def test_security_headers(self) -> None:
-        with urllib.request.urlopen(self.serve(set()) + "/") as answer:
-            headers = answer.headers
-        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
-        csp = headers["Content-Security-Policy"]
-        for part in ("default-src 'none'", "connect-src 'self'", "frame-ancestors 'self'"):
-            self.assertIn(part, csp)
-        self.assertNotIn("X-Frame-Options", headers)
+        # STANDARD.md §3: on every answer; the one inline script by its hash, never 'unsafe-inline'
+        base = self.serve(set())
+        for path in ("/", "/?tab=history", "/other"):
+            try:
+                answer = urllib.request.urlopen(base + path)
+            except urllib.error.HTTPError as err:
+                answer = err
+            with answer:
+                headers, page = answer.headers, answer.read().decode()
+            csp = {part.split()[0]: part.split()[1:] for part in headers["Content-Security-Policy"].split(";")}
+            self.assertEqual(csp, {
+                "default-src": ["'none'"], "style-src": ["'unsafe-inline'"], "script-src": [f"'{w.SCRIPT_HASH}'"],
+                "connect-src": ["'self'"], "img-src": ["'self'"], "base-uri": ["'none'"],
+                "form-action": ["'none'"], "frame-ancestors": ["'self'"]}, path)
+            self.assertEqual(headers["X-Content-Type-Options"], "nosniff", path)
+            self.assertEqual(headers["Referrer-Policy"], "same-origin", path)
+            self.assertEqual(headers["Cache-Control"], "no-store", path)
+            self.assertNotIn("X-Frame-Options", headers)
+            if path != "/other":
+                # The hash is the one of the script the page carries
+                script = re.findall(r"<script>(.*?)</script>", page, re.S)
+                self.assertEqual(script, [w.SCRIPT], path)
+                digest = base64.b64encode(hashlib.sha256(script[0].encode()).digest()).decode()
+                self.assertEqual(w.SCRIPT_HASH, f"sha256-{digest}")
 
     def test_interval_from_the_environment(self) -> None:
         with unittest.mock.patch.dict(os.environ, {"NVME_INTERVAL": "300"}):
