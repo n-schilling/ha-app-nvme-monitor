@@ -16,6 +16,7 @@ import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import parse_qs
 
 TESTS = Path(__file__).resolve().parent
 sys.path[:0] = ["/usr/local/lib", str(TESTS.parent / "nvme_monitor/rootfs/usr/local/lib")]
@@ -245,9 +246,13 @@ class Page(Fixture):
 
     def test_shared_stylesheet_then_own_rules(self) -> None:
         self.write(status())
-        page = self.page(self.state())
-        shared, own = page.find("ha.css: Home Assistant's look"), page.find("svg.chart .band")
-        self.assertTrue(0 < shared < own)
+        page = self.page(self.state(), tab="overview")
+        # ha.css in a first <style> block, the page's own rules in a second one
+        blocks = re.findall(r"<style>(.*?)</style>", page, re.S)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[0], w.STYLESHEET.read_text())
+        self.assertIn("svg.chart .band", blocks[1])
+        self.assertNotIn("header", blocks[1])
         self.assertIn('class="icon-button" title="Refresh"', page)
 
     def test_version_at_the_bottom(self) -> None:
@@ -305,7 +310,7 @@ class Page(Fixture):
         for lang, as_of in (("en", "As of"), ("de", "Stand")):
             page = self.page(state, lang)
             header = page[page.index("<header>"):page.index("</header>")]
-            self.assertTrue(header.startswith('<header><img class="app-icon" src="icon.png" alt="" width="24" height="24">'
+            self.assertTrue(header.startswith('<header><img class="brand" src="icon.png" alt="" width="24" height="24">'
                                               '<h1>NVMe Monitor</h1><nav class="tabs">'))
             self.assertLess(header.index(f'<span class="stamp opt">{as_of} {stamp}</span>'), header.index('id="refresh"'))
             self.assertLess(header.index('id="refresh"'), header.index('target="_top"'))
@@ -389,10 +394,10 @@ class Views(Charts):
         for tab, _ in w.TABS:
             page = self.page(state, tab=tab)
             header = page[page.index("<header>"):page.index("</header>")]
-            self.assertEqual(re.findall(r'<a class="[a-z]*" href="([^"]*)"', header),
-                             ["?", "?tab=health", "?tab=temperature", "?tab=history"])
-            self.assertEqual(re.findall(r'<a class="active" href="([^"]*)" aria-current="page">', header),
-                             ["?" if tab == "overview" else f"?tab={tab}"])
+            self.assertEqual(re.findall(r'<a class="tab(?: active)?" href="([^"]*)"', header),
+                             ["?tab=overview", "?tab=health", "?tab=temperature", "?tab=history"])
+            self.assertEqual(re.findall(r'<a class="tab active" href="([^"]*)" aria-current="page">', header),
+                             [f"?tab={tab}"])
         de = self.page(state, "de", tab="history")
         self.assertIn("<span>Übersicht</span>", de)
         self.assertIn("<span>Temperatur</span>", de)
@@ -415,6 +420,9 @@ class Views(Charts):
     def test_unknown_tab_is_the_overview(self) -> None:
         self.assertEqual(w.tab_of({"tab": ["nothing"]}), "overview")
         self.assertEqual(w.tab_of({"tab": ["history"]}), "history")
+        # Without a view (no query, or a bare "?") the page shows the first one
+        self.assertEqual(w.tab_of(parse_qs("")), "overview")
+        self.assertEqual(w.tab_of({"tab": ["overview"]}), "overview")
 
 
 class Format(unittest.TestCase):
@@ -474,6 +482,15 @@ class Server(Fixture):
         self.assertEqual(self.get(base + "/other")[0], 404)
         self.assertEqual(self.get(base + "/../../data/options.json")[0], 404)
 
+    def test_view_in_the_url(self) -> None:
+        # Every view is ?tab=<view>; without one (no query or a bare "?") the first view
+        base = self.serve(set())
+        overview = '<a class="tab active" href="?tab=overview" aria-current="page">'
+        for path in ("/", "/?", "/?tab=overview", "/?tab=nothing"):
+            self.assertIn(overview, self.get(base + path)[1], path)
+        self.assertIn('<a class="tab active" href="?tab=history" aria-current="page">',
+                      self.get(base + "/?tab=history")[1])
+
     def test_app_icon(self) -> None:
         # The store icon, copied into the image; the page links it relative to the ingress path
         # (in the image the checkout is not there; the image's copy is then the one to serve)
@@ -490,7 +507,7 @@ class Server(Fixture):
             self.assertEqual(self.get(base + "/icon.png")[0], 404)
         finally:
             w.APP_ICON = saved
-        self.assertIn('<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>',
+        self.assertIn('<header><img class="brand" src="icon.png" alt="" width="24" height="24"><h1>',
                       self.get(base + "/")[1])
 
     def test_page_in_home_assistants_language(self) -> None:

@@ -1,5 +1,5 @@
 name: NVMe Monitor
-version: "3.4.1"
+version: "3.4.2"
 slug: nvme_monitor
 image: ghcr.io/n-schilling/{arch}-nvme-monitor
 description: Health, wear and temperatures of the host's NVMe drives on a web page, with a Drive problem sensor via MQTT discovery
