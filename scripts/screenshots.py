@@ -9,13 +9,22 @@ read from a real drive) and opens it with a headless browser the way Home
 Assistant's ingress does: through a small proxy at the Supervisor's address
 172.30.32.2 under an ingress path, once on its own and once in a frame. It
 opens every view (Overview, Health, Temperature, History) by its URL and
-checks the tabs (after the name in its row and no bottom bar, on a phone a
-bar with icons at the bottom, the right one active; tab, reload and back in
-the frame) and the header every app page shares (the icon left of the name,
-the name exactly as `name` in config.yaml, on a phone icon, name and buttons
-within the header, the stamp, the refresh button that reloads and moves the
-stamp, the settings link with target _top and the app's slug), the
-version line, the security headers of every answer of the page (STANDARD.md
+checks the tabs (centred in the header's row, icon beside label and a line
+under the active one, no bottom bar; narrow, below 870 px, a bar at the
+bottom, icon over label; the right one active; tab, reload and back in the
+frame) and the header every app page shares, as Home Assistant's own pages
+draw it (hass-tabs-subpage, STANDARD.md §7: the menu button first, shown only
+when narrow; the h1 with the name exactly as `name` in config.yaml, hidden
+beside the tabs like the icon; menu and buttons within the header, the stamp
+(hidden when narrow), the refresh button that reloads and moves the stamp,
+the settings link with target _top and the app's slug), Home Assistant's part
+of the frame (the stand-in plays it, share/ha-app/ha-frame.js the page's: no
+kiosk mode on a wide screen; on a phone, 390 x 844 with a notch of 47 px and a
+home bar of 34 px and without, kiosk mode, so no bar of Home Assistant above
+the app, the header from the top and 56 px plus the notch, the bar at the
+bottom clear of the home bar, every tab on the screen, no sideways scrolling;
+the menu button opens Home Assistant's sidebar; wider and back switches kiosk
+mode off and on with one message each way), the version line, the security headers of every answer of the page (STANDARD.md
 §3), that there are no console errors and no CSP violations, and light, dark, German and phone width, and that the page takes Home
 Assistant's language (a stand-in for its frontend in German, English and
 French around the frame) over the browser's, reloading once. Then it takes
@@ -60,13 +69,71 @@ INGRESS = "/api/hassio_ingress/demo-token/"
 # Home Assistant's ingress, as far as the page sees it: the path prefix, the
 # client address and the frame of Home Assistant's page around it; with
 # /?lang=xx also a stand-in for the frontend's <home-assistant> element, whose
-# hass names that language (and light mode), as share/ha-app/ha-lang.js reads it
+# hass names that language (and light mode), as share/ha-app/ha-lang.js reads it;
+# with /?safe=47,34 a phone with a notch and a home bar: the safe-area insets top
+# and bottom in px that Home Assistant passes on.
+#
+# The outer page plays Home Assistant's part (its app panel, ha-panel-app) for
+# the page's share/ha-app/ha-frame.js: it answers subscribe-properties with
+# properties (narrow below 870 px, the insets, the route) and again on every
+# resize; it shows its 40 px bar #ha-bar above the frame while narrow and not in
+# kiosk mode, and pads the frame by the insets unless the page handles them
+# (handleSafeArea). What the page asked for lands in window.__kiosk,
+# window.__safe and window.__menu (toggle-menu clicks), every message in
+# window.__messages.
 PROXY = r"""
 import http.server, re, sys, urllib.error, urllib.parse, urllib.request
 APP, PREFIX = sys.argv[1], sys.argv[2]
-OUTER = ('<!doctype html><html><head><meta charset="utf-8"><title>Home Assistant</title></head>'
-         '<body style="margin:0">HASS<iframe src="%s" style="border:0;width:100vw;height:100vh"></iframe></body></html>'
-         % PREFIX)
+OUTER = ('<!doctype html><html><head><meta charset="utf-8"><title>Home Assistant</title>'
+         '<style>html, body { margin: 0; height: 100%; } body { display: flex; flex-direction: column; }'
+         ' #ha-bar { flex: none; height: 40px; background: #888; }'
+         ' #ha-app { flex: 1; min-height: 0; box-sizing: border-box; }'
+         ' iframe { margin: 0; border: 0; width: 100%; height: 100%; display: block; }</style>'
+         '<script>FRAME</script></head><body>HASS<div id="ha-bar" hidden></div><div id="ha-app">'
+         '<iframe id="ingress" title="app" src="INGRESS"></iframe></div></body></html>')
+# Home Assistant's app panel as far as ha-frame.js talks to it; in the head, so
+# it listens before the frame loads
+FRAME = '''(() => {
+  const safe = (new URLSearchParams(location.search).get("safe") || "0,0").split(",");
+  const inset = (n) => (parseInt(n, 10) || 0) + "px";
+  const insets = { top: inset(safe[0]), right: "0px", bottom: inset(safe[1]), left: "0px" };
+  const frame = () => document.getElementById("ingress").contentWindow;
+  Object.assign(window, { __kiosk: null, __safe: null, __menu: 0, __messages: [] });
+  let subscribed = false;
+  const narrow = () => matchMedia("(max-width: 870px)").matches;
+  const layout = () => {
+    const bar = document.getElementById("ha-bar"), box = document.getElementById("ha-app");
+    if (!bar || !box) return;
+    bar.hidden = !(narrow() && !window.__kiosk);
+    box.style.paddingTop = window.__safe || !bar.hidden ? "0px" : insets.top;
+    box.style.paddingBottom = window.__safe ? "0px" : insets.bottom;
+  };
+  const send = () => {
+    if (subscribed) frame().postMessage({ type: "home-assistant/properties", narrow: narrow(),
+      route: { prefix: "/app/demo", path: "" }, safeAreaInsets: insets }, location.origin);
+  };
+  window.addEventListener("message", (e) => {
+    if (e.source !== frame() || !e.data) return;
+    window.__messages.push(e.data);
+    if (e.data.type === "home-assistant/subscribe-properties") {
+      subscribed = true;
+      window.__kiosk = !!e.data.kioskMode;
+      window.__safe = !!e.data.handleSafeArea;
+      layout();
+      send();
+    } else if (e.data.type === "home-assistant/unsubscribe-properties") {
+      subscribed = false;
+      window.__kiosk = false;
+      window.__safe = false;
+      layout();
+    } else if (e.data.type === "home-assistant/toggle-menu") {
+      window.__menu += 1;
+    }
+  });
+  window.addEventListener("resize", () => { layout(); send(); });
+  document.addEventListener("DOMContentLoaded", layout);
+})();'''
+OUTER = OUTER.replace("FRAME", FRAME).replace("INGRESS", PREFIX)
 HASS = ('<home-assistant></home-assistant><script>document.querySelector("home-assistant").hass ='
         ' { language: "LANG", locale: { language: "LANG" }, themes: { darkMode: false } };</script>')
 LANG = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?")
@@ -275,44 +342,47 @@ TAB_LABELS = {"en": ["Overview", "Health", "Temperature", "History"],
 
 
 def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, phone: bool,
-                 tab: str = "overview") -> None:
+                 tab: str = "overview", safe: tuple[int, int] = (0, 0)) -> None:
+    """The header as Home Assistant's own pages draw it (hass-tabs-subpage, STANDARD.md §7):
+    phone is Home Assistant's narrow, safe the insets top and bottom the page keeps clear of."""
     header = page.evaluate("""() => {
         const h = document.querySelector("body > header");
-        const actions = h && h.querySelector(":scope > .actions");
-        return h && {
-            tags: [...h.children].slice(0, 3).map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
-            h1: h.querySelector("h1")?.textContent,
-            // The store icon left of the name: loaded, 24 px, in the row of the name
-            icon: h.firstElementChild.matches("img.brand") ? (() => {
-              const box = h.firstElementChild.getBoundingClientRect(), name = h.querySelector(":scope > h1").getBoundingClientRect();
-              return {src: h.firstElementChild.getAttribute("src"), loaded: h.firstElementChild.complete && h.firstElementChild.naturalWidth > 0,
-                      size: [box.width, box.height], row: Math.abs((box.top + box.bottom) / 2 - (name.top + name.bottom) / 2) < 2,
-                      left: box.right <= name.left};
-            })() : null,
-            // Icon, name and the visible buttons within the header's box
-            inside: (() => {
-              const outer = h.getBoundingClientRect();
-              const items = [h.querySelector(":scope > img.brand"), h.querySelector(":scope > h1"),
-                             ...(actions ? [...actions.children].filter((e) => e.offsetParent) : [])].filter(Boolean);
-              return items.filter((e) => {
-                const r = e.getBoundingClientRect();
-                return r.left < outer.left - 0.5 || r.right > outer.right + 0.5 || r.top < outer.top - 0.5
-                       || r.bottom > outer.bottom + 0.5 || r.width === 0;
-              }).map((e) => e.tagName.toLowerCase() + (e.id ? "#" + e.id : ""));
-            })(),
-            // The views: tabs right after the name, in its row (on a phone a bar at the bottom of the window)
-            tabs: (() => {
-              const nav = h.querySelector(":scope > nav.tabs");
-              if (!nav) return null;
-              const name = h.querySelector(":scope > h1").getBoundingClientRect(), box = nav.getBoundingClientRect();
-              const mid = (r) => (r.top + r.bottom) / 2;
-              return {labels: [...nav.querySelectorAll(":scope > a.tab")].map((a) => a.textContent),
-                      hrefs: [...nav.querySelectorAll(":scope > a.tab")].map((a) => a.getAttribute("href")),
+        if (!h) return null;
+        const actions = h.querySelector(":scope > .actions");
+        const box = h.getBoundingClientRect(), shown = (e) => !!e && getComputedStyle(e).display !== "none";
+        const m = h.querySelector(":scope > .menu"), h1 = h.querySelector(":scope > h1");
+        const nav = h.querySelector(":scope > nav.tabs");
+        const within = (e) => { const r = e.getBoundingClientRect();
+          return r.width > 0 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5; };
+        return {
+            tags: [...h.children].map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
+            top: box.top, height: box.height, narrow: document.documentElement.classList.contains("narrow"),
+            h1: h1?.textContent, h1Hidden: !!h1 && h1.getBoundingClientRect().width <= 1 && h1.getBoundingClientRect().height <= 1,
+            brand: [...h.querySelectorAll("img")].some(shown),
+            menu: m && {first: h.firstElementChild === m, ha: m.hasAttribute("data-ha-menu"), role: m.getAttribute("role"),
+                        title: m.title, label: m.getAttribute("aria-label"), path: m.querySelector("svg path")?.getAttribute("d"),
+                        shown: shown(m)},
+            // The menu and the visible buttons within the header's box (below the notch)
+            inside: [m, ...(actions ? [...actions.children] : [])].filter((e) => e && e.offsetParent && shown(e))
+              .filter((e) => !within(e)).map((e) => e.tagName.toLowerCase() + (e.id ? "#" + e.id : "")),
+            tabs: nav && (() => {
+              const tabs = [...nav.querySelectorAll(":scope > a.tab")], first = tabs[0].getBoundingClientRect();
+              const last = tabs[tabs.length - 1].getBoundingClientRect(), r = nav.getBoundingClientRect();
+              const a = actions.getBoundingClientRect(), pad = getComputedStyle(nav).paddingBottom;
+              const after = (t) => getComputedStyle(t, "::after").content;
+              return {labels: tabs.map((t) => t.textContent), hrefs: tabs.map((t) => t.getAttribute("href")),
                       others: nav.querySelectorAll(":scope > :not(a.tab)").length,
-                      active: [...nav.querySelectorAll("a.tab.active[aria-current=page]")].map((a) => a.getAttribute("href")),
-                      row: Math.abs(mid(box) - mid(name)) < 2, bottom: Math.abs(box.bottom - window.innerHeight) < 1,
+                      active: [...nav.querySelectorAll("a.tab.active[aria-current=page]")].map((t) => t.getAttribute("href")),
+                      icons: tabs.every((t) => shown(t.querySelector("svg"))),
                       fixed: getComputedStyle(nav).position === "fixed",
-                      icons: [...nav.children].every((a) => a.querySelector("svg") && getComputedStyle(a.querySelector("svg")).display !== "none")};
+                      // Wide: in the header's row, centred between its start and the actions
+                      row: tabs.every(within), centred: Math.abs((first.left + last.right) / 2 - (r.left + r.right) / 2) < 1
+                           && r.right <= a.left + 0.5,
+                      // Narrow: the bar at the bottom of the window, clear of the home bar, every tab on the screen
+                      bottom: r.bottom - innerHeight, pad,
+                      onScreen: tabs.every((t) => { const q = t.getBoundingClientRect();
+                        return q.left >= 0 && q.right <= innerWidth && q.bottom <= innerHeight - parseFloat(pad) + 0.5; }),
+                      line: tabs.map((t) => after(t) !== "none" && after(t) !== "")};
             })(),
             actions: actions ? [...actions.children].map((e) => ({
                 tag: e.tagName.toLowerCase(), id: e.id, cls: e.className, text: e.textContent,
@@ -326,21 +396,32 @@ def check_header(page: Page | Frame, problems: Problems, where: str, lang: str, 
         problems.append(f"{where}: no header")
         return
     de = lang == "de"
-    problems.check(header["tags"] == ["img.brand", "h1", "nav.tabs"] and header["h1"] == NAME,
-                   f"{where}: the header does not start with the icon, <h1>{NAME}</h1> (config.yaml), the tabs: "
-                   f"{header['tags']} {header['h1']!r}")
+    menu = "Menü" if de else "Menu"
+    problems.check(header["narrow"] == phone, f"{where}: html.narrow is {header['narrow']}, not {phone}")
+    problems.check(header["tags"] == ["a.icon-button.menu", "h1.name", "nav.tabs", "div.actions"] and header["h1"] == NAME,
+                   f"{where}: the header does not hold the menu button, <h1>{NAME}</h1> (config.yaml), the tabs and "
+                   f"the actions: {header['tags']} {header['h1']!r}")
+    problems.check(header["h1Hidden"] and not header["brand"], f"{where}: an icon or a visible name beside the tabs")
+    problems.check(abs(header["top"]) < 0.5 and abs(header["height"] - 56 - safe[0]) < 0.5,
+                   f"{where}: the header is not from the top and 56 + {safe[0]} px high ({header['top']}, {header['height']})")
+    m = header["menu"] or {}
+    problems.check(bool(m.get("first") and m.get("ha") and m.get("role") == "button" and m.get("title") == menu == m.get("label")
+                        and m.get("path") == w.ICONS["menu"] and m.get("shown") == phone),
+                   f"{where}: the menu button is not first and {'shown' if phone else 'hidden'}: {m}")
     tabs = header["tabs"] or {}
     problems.check(tabs.get("labels") == TAB_LABELS[lang] and tabs.get("hrefs") == [href for _, href in TABS]
                    and tabs.get("others") == 0,
                    f"{where}: the tabs are {tabs.get('labels')} {tabs.get('hrefs')}")
     problems.check(tabs.get("active") == [dict(TABS)[tab]], f"{where}: the active tab is {tabs.get('active')}, not {tab}")
+    problems.check(bool(tabs.get("icons")), f"{where}: a tab without its icon")
     if phone:
-        problems.check(bool(tabs.get("bottom") and tabs.get("icons")), f"{where}: the tabs are no bar with icons at the bottom: {tabs}")
+        problems.check(bool(tabs.get("fixed") and abs(tabs.get("bottom", 1)) < 0.5 and tabs.get("pad") == f"{safe[1]}px"
+                            and tabs.get("onScreen") and not any(tabs.get("line", []))),
+                       f"{where}: the tabs are no bar at the bottom, {safe[1]} px clear of the home bar, all on the screen: {tabs}")
     else:
-        problems.check(bool(tabs.get("row") and not tabs.get("icons")), f"{where}: the tabs are not in the row of the name: {tabs}")
-        problems.check(not tabs.get("fixed") and not tabs.get("bottom"), f"{where}: a bottom bar on a wide screen: {tabs}")
-    problems.check(header["icon"] == {"src": "icon.png", "loaded": True, "size": [24, 24], "row": True, "left": True},
-                   f"{where}: the app's icon does not show, 24 px, left of the name in its row: {header['icon']}")
+        problems.check(bool(not tabs.get("fixed") and tabs.get("row") and tabs.get("centred")
+                            and tabs.get("line") == [href == dict(TABS)[tab] for _, href in TABS]),
+                       f"{where}: the tabs are not centred in the header's row with a line under the active one: {tabs}")
     problems.check(not header["inside"], f"{where}: outside the header's box: {header['inside']}")
     a = header["actions"]
     problems.check([(x["tag"], x["id"]) for x in a] == [("span", ""), ("a", "refresh"), ("a", "")],
@@ -393,6 +474,76 @@ def check_tabs_in_frame(page: Page, base: str, problems: Problems) -> None:
         problems.append(f"frame: the tabs do not work: {err.message.splitlines()[0]}")
 
 
+def in_frame(page: Page, wide: bool, safe: tuple[int, int]) -> Frame:
+    """The app's frame in the stand-in for Home Assistant, once the page has subscribed."""
+    page.frame_locator("#ingress").locator("body > header h1").wait_for(state="attached")
+    page.wait_for_function("window.__safe !== null")
+    page.wait_for_timeout(500)  # room for the answer, and for any further message, which must not loop
+    app = next(f for f in page.frames if f.parent_frame is not None)
+    app.wait_for_selector("html:not(.narrow)" if wide else "html.narrow", state="attached")
+    if safe != (0, 0):
+        app.wait_for_function("getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')"
+                              f".trim() === '{safe[0]}px'")
+    return app
+
+
+def check_frame(page: Page, app: Frame, problems: Problems, where: str, lang: str, wide: bool,
+                safe: tuple[int, int]) -> None:
+    """What the page asked of Home Assistant (the stand-in records it) and where its frame sits."""
+    seen = page.evaluate("""() => ({kiosk: window.__kiosk, safe: window.__safe, menu: window.__menu,
+      messages: window.__messages.map((m) => m.type + (m.type.endsWith("/subscribe-properties") ? ":" + m.kioskMode : "")),
+      bar: getComputedStyle(document.getElementById("ha-bar")).display !== "none",
+      frame: (() => { const r = document.getElementById("ingress").getBoundingClientRect(); return [r.top, r.bottom - innerHeight]; })()})""")
+    problems.check(seen["kiosk"] is (not wide), f"{where}: kiosk mode {'' if wide else 'not '}requested ({seen['messages']})")
+    problems.check(seen["safe"] is True, f"{where}: the page does not keep clear of the notch itself (handleSafeArea)")
+    problems.check(not seen["bar"], f"{where}: a bar of Home Assistant above the app")
+    problems.check(seen["frame"] == [0, 0], f"{where}: the frame does not fill the window ({seen['frame']})")
+    problems.check(len(seen["messages"]) <= 2, f"{where}: a loop of messages ({seen['messages']})")
+    check_header(app, problems, where, lang, not wide, "overview", safe)
+    problems.check(app.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"{where}: the page scrolls sideways")
+
+
+def check_frames(browser, base: str, problems: Problems, out: Path | None) -> None:
+    """Home Assistant's part of the frame (the stand-in plays it): kiosk mode only
+    while narrow, the notch and the home bar by Home Assistant's insets, the menu."""
+    for width, height, safe, lang in ((1200, 760, (0, 0), "en"), (390, 844, (47, 34), "de"), (390, 844, (0, 0), "en")):
+        wide = width > 870
+        where = f"frame {width}px" + (f", notch {safe[0]} px, home bar {safe[1]} px" if safe != (0, 0) else "")
+        context = browser.new_context(viewport={"width": width, "height": height}, color_scheme="dark",
+                                      locale="de-DE" if lang == "de" else "en-US", device_scale_factor=1 if wide else 2)
+        page = context.new_page()
+        watch(page, problems, where)
+        try:
+            page.goto(base + "/" + ("?safe=" + ",".join(map(str, safe)) if safe != (0, 0) else ""), wait_until="load")
+            app = in_frame(page, wide, safe)
+            check_frame(page, app, problems, where, lang, wide, safe)
+            if out and not wide and safe != (0, 0):
+                page.screenshot(path=out / "phone-notch.png")
+                print(out / "phone-notch.png")
+            if not wide:
+                app.locator("header .menu").click()
+                page.wait_for_timeout(200)
+                problems.check(page.evaluate("window.__menu") == 1, f"{where}: the menu button does not open Home Assistant's sidebar")
+            if safe != (0, 0):
+                # Wider than narrow and back: kiosk mode off (Home Assistant's bar back), then on again
+                page.set_viewport_size({"width": 1200, "height": height})
+                app.wait_for_selector("html:not(.narrow)", state="attached")
+                page.wait_for_timeout(300)
+                problems.check(page.evaluate("window.__kiosk") is False, f"{where}: wide again, kiosk mode stays on")
+                page.set_viewport_size({"width": width, "height": height})
+                app.wait_for_selector("html.narrow", state="attached")
+                page.wait_for_timeout(300)
+                sent = page.evaluate("""window.__messages.filter((m) => m.type.endsWith("-properties"))
+                    .map((m) => m.type.split("/")[1] + (m.type.endsWith("/subscribe-properties") ? ":" + m.kioskMode : ""))""")
+                problems.check(page.evaluate("window.__kiosk") is True and sent == [
+                    "subscribe-properties:true", "unsubscribe-properties", "subscribe-properties:false",
+                    "subscribe-properties:true"], f"{where}: narrow again, not kiosk mode once more and no more messages ({sent})")
+                check_header(app, problems, f"{where}, narrow again", lang, True, "overview", safe)
+        except PlaywrightError as err:
+            problems.append(f"{where}: {err.message.splitlines()[0]}")
+        context.close()
+
+
 def check_language(browser, base: str, problems: Problems) -> None:
     """The browser asks for English; the page follows Home Assistant's language
     (share/ha-app/ha-lang.js): one reload when it changes, none when not."""
@@ -441,6 +592,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", default="nvme-monitor:page", help="the built image (default: %(default)s)")
     parser.add_argument("--out", type=Path, default=ROOT / "docs/screenshots", help="folder for the screenshots")
+    parser.add_argument("--notch", type=Path, help="also a screenshot of a phone with a notch in Home Assistant's frame,"
+                        " into this folder (not one of the docs' screenshots)")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     name = f"nvme-page-{os.getpid()}"
@@ -469,7 +622,7 @@ def main() -> None:
                     for tab, href in TABS:
                         if tab != "overview":
                             page.goto(base + INGRESS + href, wait_until="load")
-                        check_header(page, problems, f"{where} {tab}", lang, width < 600, tab)
+                        check_header(page, problems, f"{where} {tab}", lang, width <= 870, tab)
                         if tab in shots or (tab == "overview" and "phone-dark" in shots):
                             path = args.out / f"{'phone-dark' if 'phone-dark' in shots else tab}.png"
                             page.screenshot(path=path, full_page=tab != "overview")
@@ -481,7 +634,7 @@ def main() -> None:
                     try:
                         with page.expect_navigation(wait_until="load", timeout=10_000):
                             page.click("#refresh", timeout=5_000)
-                        check_header(page, problems, f"{where} after refresh", lang, width < 600, "history")
+                        check_header(page, problems, f"{where} after refresh", lang, width <= 870, "history")
                         moved = page.locator("header .stamp").text_content()
                         problems.check(moved != stamp, f"{where}: refresh leaves the stamp at {moved!r}")
                     except PlaywrightError as err:
@@ -494,6 +647,7 @@ def main() -> None:
                     if (lang, scheme) == ("en", "light"):
                         check_tabs_in_frame(page, base, problems)
                     context.close()
+                check_frames(browser, base, problems, args.notch)
                 check_language(browser, base, problems)
                 browser.close()
         finally:
@@ -502,7 +656,7 @@ def main() -> None:
         print("Page check FAILED:", *problems, sep="\n  ", file=sys.stderr)
         raise SystemExit(1)
     print("Page check passed: header, version line, security headers, no console errors or CSP violations, "
-          "light, dark, de, phone width, Home Assistant's language")
+          "light, dark, de, phone width, Home Assistant's frame (wide, phone with and without a notch), Home Assistant's language")
 
 
 if __name__ == "__main__":

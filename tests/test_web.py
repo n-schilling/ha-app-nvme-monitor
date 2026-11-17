@@ -306,17 +306,23 @@ class Page(Fixture):
         self.assertNotIn("/config/app/", w.render(self.state(), "en", None, now=NOW, every=60))
 
     def test_header_like_every_app(self) -> None:
-        # The app's name, then stamp, refresh and settings, also before the first reading
+        # The menu button, the app's name (hidden beside the tabs by ha.css), no icon, the tabs, then
+        # stamp, refresh and settings, also before the first reading (STANDARD.md, section 7)
         state = w.State(w.History(self.path), self.dir, clock=lambda: NOW)
         stamp = time.strftime("%H:%M:%S", time.localtime(NOW))
         for lang, as_of in (("en", "As of"), ("de", "Stand")):
             page = self.page(state, lang)
             header = page[page.index("<header>"):page.index("</header>")]
-            self.assertTrue(header.startswith('<header><img class="brand" src="icon.png" alt="" width="24" height="24">'
-                                              '<h1>NVMe Monitor</h1><nav class="tabs">'))
+            menu = "Menü" if lang == "de" else "Menu"
+            self.assertRegex(header, f'^<header><a class="icon-button menu" href="" data-ha-menu role="button"'
+                                     f' title="{menu}" aria-label="{menu}"><svg[^>]*><path d="{w.ICONS["menu"]}"/></svg></a>'
+                                     '<h1 class="name">NVMe Monitor</h1><nav class="tabs">')
+            self.assertNotIn("<img", header)
             self.assertLess(header.index(f'<span class="stamp opt">{as_of} {stamp}</span>'), header.index('id="refresh"'))
             self.assertLess(header.index('id="refresh"'), header.index('target="_top"'))
         self.assertIn("<title>NVMe Monitor</title>", page)
+        # Up to the edges of a phone; ha.css keeps the header and the bar clear of the notch
+        self.assertIn('<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">', page)
 
 
 class Charts(Fixture):
@@ -455,6 +461,13 @@ class Format(unittest.TestCase):
         self.assertIn("ha_lang", shared)
         self.assertTrue(w.SCRIPT.startswith(shared))
 
+    def test_shared_frame_script_after_the_language(self) -> None:
+        """ha-frame.js right after ha-lang.js, before the page's own code, in the one hashed script."""
+        lang, frame = w.SHARED_SCRIPT.read_text(), w.FRAME_SCRIPT.read_text()
+        self.assertIn("home-assistant/subscribe-properties", frame)
+        self.assertIn("handleSafeArea: true", frame)
+        self.assertTrue(w.SCRIPT.startswith(lang + frame))
+
 
 class Server(Fixture):
     def serve(self, allowed: set[str]) -> str:
@@ -509,8 +522,7 @@ class Server(Fixture):
             self.assertEqual(self.get(base + "/icon.png")[0], 404)
         finally:
             w.APP_ICON = saved
-        self.assertIn('<header><img class="brand" src="icon.png" alt="" width="24" height="24"><h1>',
-                      self.get(base + "/")[1])
+        self.assertIn('<h1 class="name">NVMe Monitor</h1>', self.get(base + "/")[1])
 
     def test_page_in_home_assistants_language(self) -> None:
         base = self.serve(set())

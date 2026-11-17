@@ -13,7 +13,7 @@ Requires Home Assistant 2026.11 or later.
 
 The data in these pictures is made up for these pictures.
 
-<img src="docs/screenshots/overview.png" alt="Overview: the drive is healthy, with model, firmware, capacity, hours, data read and written; tabs for Health, Temperature and History in the header" width="700">
+<img src="docs/screenshots/overview.png" alt="Overview: the drive is healthy, with model, firmware, capacity, hours, data read and written; the views as tabs in the middle of the header" width="700">
 
 <img src="docs/screenshots/health.png" alt="Health view: wear, spare, media errors, error log entries, unsafe shutdowns, critical warning" width="700">
 
@@ -21,7 +21,7 @@ The data in these pictures is made up for these pictures.
 
 <img src="docs/screenshots/history.png" alt="History view: data written per day for 90 days with a gap shown as lighter bars, and the days on which a counter of trouble grew" width="700">
 
-<img src="docs/screenshots/phone-dark.png" alt="The overview on a phone in dark mode, the tabs as a bar at the bottom" width="300">
+<img src="docs/screenshots/phone-dark.png" alt="The overview on a phone in dark mode, with the menu button and the tabs as a bar at the bottom" width="300">
 
 ## Overview
 
@@ -64,13 +64,13 @@ See [the documentation](nvme_monitor/DOCS.md) for the options, the web page, the
 
 ## Development
 
-The monitor is a bash script, [`monitor/run`](nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/monitor/run), the web page a Python program without third-party packages, [`nvme_web.py`](nvme_monitor/rootfs/usr/local/lib/nvme_web.py); the image installs only Debian packages. The page's look comes from the stylesheet shared by these apps, [`ha.css`](nvme_monitor/rootfs/usr/local/share/ha-app/ha.css), and its language from the script shared by them, [`ha-lang.js`](nvme_monitor/rootfs/usr/local/share/ha-app/ha-lang.js); both stay identical in every app.
+The monitor is a bash script, [`monitor/run`](nvme_monitor/rootfs/etc/s6-overlay/s6-rc.d/monitor/run), the web page a Python program without third-party packages, [`nvme_web.py`](nvme_monitor/rootfs/usr/local/lib/nvme_web.py); the image installs only Debian packages. The page's look comes from the stylesheet shared by these apps, [`ha.css`](nvme_monitor/rootfs/usr/local/share/ha-app/ha.css), its language from the script shared by them, [`ha-lang.js`](nvme_monitor/rootfs/usr/local/share/ha-app/ha-lang.js), and its place in Home Assistant's frame (narrow, a phone's notch, the menu button) from [`ha-frame.js`](nvme_monitor/rootfs/usr/local/share/ha-app/ha-frame.js); all three stay identical in every app.
 
 ```bash
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs what CI runs (changelog, shellcheck, ruff, the image built for this machine with the tests of the monitor, the image and the web page, the test against a real MQTT broker and the Page check; `--no-docker` skips everything that needs Docker). It needs bash, Python 3 and Docker; shellcheck and ruff come from Docker and `uvx` when they are not installed. The Page check and the screenshots are one script, `scripts/screenshots.py` (see its header for the setup): it starts the built image with made-up data in a throwaway container, opens the page through a stand-in for Home Assistant's ingress with a headless browser, checks the header every app page shares, the version line, console and content security policy, light, dark and phone width, and writes the screenshots to `docs/screenshots`. The page check is not part of CI: run `scripts/check.sh` before a release that changes the page.
+`scripts/check.sh` runs what CI runs (changelog, shellcheck, ruff, the image built for this machine with the tests of the monitor, the image and the web page, the test against a real MQTT broker and the Page check; `--no-docker` skips everything that needs Docker). It needs bash, Python 3 and Docker; shellcheck and ruff come from Docker and `uvx` when they are not installed. The Page check and the screenshots are one script, `scripts/screenshots.py` (see its header for the setup): it starts the built image with made-up data in a throwaway container, opens the page through a stand-in for Home Assistant's ingress with a headless browser, checks the header every app page shares, as Home Assistant's own pages draw it (menu button on a phone, the tabs centred on a wide screen and as a bar at the bottom on a phone), Home Assistant's part of the frame (the stand-in plays it: no kiosk mode on a wide screen; on a phone with a notch and a home bar kiosk mode, no bar of Home Assistant above the app, header and bottom bar clear of notch and home bar, the menu button opening the sidebar), the version line, console and content security policy, light, dark and phone width, and writes the screenshots to `docs/screenshots`. The page check is not part of CI: run `scripts/check.sh` before a release that changes the page.
 
 Releases: work on `dev`, raise `version` in `nvme_monitor/config.yaml` and add its section to the changelog. CI runs on `dev` (amd64 and aarch64 each on a runner of its own kind); once it is green, push that commit to `main`. CI does not run again there: the release workflow checks that CI passed for the commit, then tags the version and publishes the release with that section.
 

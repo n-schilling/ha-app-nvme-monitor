@@ -55,6 +55,9 @@ STYLESHEET = Path(__file__).resolve().parents[1] / "share/ha-app/ha.css"
 # Home Assistant's language for the page (cookie ha_lang), shared like the
 # stylesheet; it runs first, in the page's one script
 SHARED_SCRIPT = STYLESHEET.with_name("ha-lang.js")
+# Home Assistant's frame (narrow, the phone's insets, its own bar off on a
+# phone, the menu button), shared the same way; it runs right after ha-lang.js
+FRAME_SCRIPT = STYLESHEET.with_name("ha-frame.js")
 POLL = 15                # seconds between two reads of the status files
 REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the history per 5 minutes
@@ -73,7 +76,7 @@ WARNING_BITS = ("spare", "temperature", "reliability", "read_only", "backup", "p
 
 TEXT = {
     "en": {
-        "settings": "Settings", "refresh": "Refresh", "as_of": "As of {}",
+        "menu": "Menu", "settings": "Settings", "refresh": "Refresh", "as_of": "As of {}",
         "loading": "Waiting for the first reading …", "no_drive": "No readable NVMe drive.",
         "healthy": "The drive is healthy", "problem": "The drive needs attention",
         "unreadable": "SMART log not readable since {}; the values are from the last reading",
@@ -118,7 +121,7 @@ TEXT = {
         "overview": "Overview", "tab_temperature": "Temperature",
     },
     "de": {
-        "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}",
+        "menu": "Menü", "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}",
         "loading": "Warte auf die erste Abfrage …", "no_drive": "Kein lesbares NVMe-Laufwerk.",
         "healthy": "Das Laufwerk ist in Ordnung", "problem": "Das Laufwerk braucht Aufmerksamkeit",
         "unreadable": "SMART-Log seit {} nicht lesbar; die Werte stammen von der letzten Abfrage",
@@ -168,6 +171,7 @@ TEXT = {
 
 # Material Design Icons (Apache 2.0), as Home Assistant draws them
 ICONS = {
+    "menu": "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
     "overview": "M19,5V7H15V5H19M9,5V11H5V5H9M19,13V19H15V13H19M9,17V19H5V17H9M21,3H13V9H21V3M11,3H3V13H11V3M21,11H13V21H21V11M11,15H3V21H11V15Z",
     "health": "M7.5,4A5.5,5.5 0 0,0 2,9.5C2,10 2.09,10.5 2.22,11H6.3L7.57,7.63C7.87,6.83 9.05,6.75 9.43,7.63L11.5,13L12.09,11.58C12.22,11.25 12.57,11 13,11H21.78C21.91,10.5 22,10 22,9.5A5.5,5.5 0 0,0 16.5,4C14.64,4 13,4.93 12,6.34C11,4.93 9.36,4 7.5,4V4M3,12.5A1,1 0 0,0 2,13.5A1,1 0 0,0 3,14.5H5.44L11,20C12,20.9 12,20.9 13,20L18.56,14.5H21A1,1 0 0,0 22,13.5A1,1 0 0,0 21,12.5H13.4L12.47,14.8C12.07,15.81 10.92,15.67 10.55,14.83L8.5,9.5L7.54,11.83C7.39,12.21 7.05,12.5 6.6,12.5H3Z",
     "temperature": "M15 13V5A3 3 0 0 0 9 5V13A5 5 0 1 0 15 13M12 4A1 1 0 0 1 13 5V8H11V5A1 1 0 0 1 12 4Z",
@@ -194,8 +198,9 @@ def stylesheet() -> str:
         return ""
 
 
-# The app's store icon at the left of the header, copied into the image next
-# to the stylesheet; the page links it as icon.png, relative to the ingress path
+# The app's store icon, copied into the image next to the stylesheet and
+# served as icon.png. With its views as tabs the header shows no icon (as
+# Home Assistant's own pages); a page of a single view would show it there
 APP_ICON_FILE = STYLESHEET.with_name("icon.png")
 
 
@@ -208,7 +213,6 @@ def app_icon() -> bytes | None:
 
 
 APP_ICON = app_icon()
-APP_ICON_TAG = '<img class="brand" src="icon.png" alt="" width="24" height="24">'
 
 APP_STYLE = """
 a.state { margin: 0 -8px 8px; padding: 4px 8px; border-radius: 8px; }
@@ -275,11 +279,14 @@ SCRIPT = """(() => {
 
 
 def shared_script() -> str:
-    try:
-        return SHARED_SCRIPT.read_text()
-    except OSError as err:
-        LOGGER.warning("Cannot read the language script: %s", err)
-        return ""
+    """The scripts all the apps share (ha-lang.js, then ha-frame.js), which run before this page's own."""
+    shared = ""
+    for file in (SHARED_SCRIPT, FRAME_SCRIPT):
+        try:
+            shared += file.read_text()
+        except OSError as err:
+            LOGGER.warning("Cannot read the shared script %s: %s", file.name, err)
+    return shared
 
 
 SCRIPT = shared_script() + SCRIPT
@@ -888,7 +895,11 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
                            for drive, status in drives.items())
         else:
             body = card(None, f'<p class="muted">{esc(t["loading"] if not state.at else t["no_drive"])}</p>')
-    # The same header as every app's page: name, then stamp, refresh, settings
+    # The same header as every app's page, as Home Assistant's own pages: the
+    # menu button (narrow only), the views (no icon and no visible name with
+    # them), then stamp, refresh, settings
+    menu = (f'<a class="icon-button menu" href="" data-ha-menu role="button" title="{esc(t["menu"])}"'
+            f' aria-label="{esc(t["menu"])}">{icon("menu")}</a>')
     stamp = time.strftime("%H:%M:%S", time.localtime(now))
     actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>'
     actions += (f'<a href="" id="refresh" class="icon-button" title="{esc(t["refresh"])}" '
@@ -898,9 +909,9 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
                 f'title="{esc(t["settings"])}" aria-label="{esc(t["settings"])}">{icon("settings")}</a>'
                 if slug else "")
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
             f"<title>{esc(APP_NAME)}</title><style>{stylesheet()}</style><style>{APP_STYLE}</style><script>{SCRIPT}</script></head><body>"
-            f'<header>{APP_ICON_TAG}<h1>{esc(APP_NAME)}</h1>{tabs(t, tab)}<div class="actions">{actions}</div></header>'
+            f'<header>{menu}<h1 class="name">{esc(APP_NAME)}</h1>{tabs(t, tab)}<div class="actions">{actions}</div></header>'
             f'<main>{body}</main><footer class="version">{esc(f"{APP_NAME} {version()}".strip())}</footer>'
             "</body></html>")
 
